@@ -1,0 +1,72 @@
+# =============================================================================
+# ARAP — Python Dependencies (all pinned for reproducibility)
+# =============================================================================
+
+# ── Web framework ──────────────────────────────────────────────────────────────
+fastapi==0.115.0          # Async REST + WebSocket. Auto OpenAPI docs at /docs.
+uvicorn[standard]==0.30.6 # ASGI server. [standard] includes websockets support.
+pydantic==2.8.2           # Request/response validation.
+pydantic-settings==2.4.0  # Load config from env vars and .env files.
+python-multipart==0.0.12  # Enables file upload parsing (/ingest endpoint).
+websockets==13.1          # WebSocket protocol for streaming responses.
+
+# ── LangGraph / LangChain ──────────────────────────────────────────────────────
+langgraph==0.2.50                  # Stateful agent graph with conditional edges.
+langgraph-checkpoint-redis==0.0.6  # Redis-backed conversation state persistence.
+langchain==0.3.7                   # Core LangChain primitives.
+langchain-openai==0.2.10           # ChatOpenAI integration.
+langchain-core==0.3.15             # LangChain interfaces (pinned).
+langsmith==0.1.141                 # Observability — auto-traces LangGraph nodes.
+
+# ── LLM ────────────────────────────────────────────────────────────────────────
+openai==1.51.0            # OpenAI SDK (used by langchain-openai).
+
+# ── PDF parsing ────────────────────────────────────────────────────────────────
+pymupdf==1.24.10          # Layout-aware PDF extraction with page numbers.
+                          # Chosen over PyPDF2: better paragraph preservation.
+
+# ── Embeddings + reranking + NLI ──────────────────────────────────────────────
+sentence-transformers==3.2.1  # Local inference for:
+                               #   - Chunk embedding (MiniLM-L6-v2)
+                               #   - Cross-encoder reranking (ms-marco-MiniLM)
+                               #   - NLI faithfulness judge (nli-deberta-v3)
+
+# ── Vector database ────────────────────────────────────────────────────────────
+qdrant-client==1.12.0     # Qdrant client. REST + gRPC support.
+                          # Chosen over FAISS: metadata filtering, HTTP API.
+
+# ── BM25 keyword search ────────────────────────────────────────────────────────
+rank-bm25==0.2.2          # BM25Okapi. In-memory, no extra infra.
+                          # Catches exact matches (names, IDs) dense search misses.
+
+# ── Knowledge graph ────────────────────────────────────────────────────────────
+neo4j==5.25.0             # Neo4j Bolt driver for Cypher queries.
+
+# ── Long-term memory ───────────────────────────────────────────────────────────
+mem0ai==0.1.29            # Mem0 client. Cloud or self-hosted.
+                          # 91% lower p95 latency vs full-context (arXiv:2504.19413).
+
+# ── Databases ──────────────────────────────────────────────────────────────────
+asyncpg==0.30.0           # Async PostgreSQL driver. 3-5x faster than psycopg2 async.
+sqlalchemy[asyncio]==2.0.36  # ORM layer over asyncpg.
+psycopg2-binary==2.9.10   # Sync driver for Alembic migrations and Celery.
+redis==5.2.0              # Redis client for session management.
+
+# ── Async task queue ───────────────────────────────────────────────────────────
+celery[redis]==5.4.0      # Background task queue for async PDF ingestion.
+flower==2.0.1             # Celery monitoring UI at http://localhost:5555.
+
+# ── Evaluation ─────────────────────────────────────────────────────────────────
+ragas==0.1.21             # RAGAS eval: faithfulness, relevancy, precision, recall.
+datasets==3.1.0           # HuggingFace datasets (required by RAGAS).
+
+# ── Utilities ──────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1      # Loads .env file (required by pydantic-settings).
+httpx==0.27.2             # Async HTTP client + FastAPI TestClient.
+numpy==1.26.4             # Numerical computing (sentence-transformers, RAGAS).
+tenacity==9.0.0           # Retry with exponential backoff for external API calls.
+
+# ── Testing ────────────────────────────────────────────────────────────────────
+pytest==8.3.3             # Test runner: pytest tests/ -v --cov=app
+pytest-asyncio==0.24.0    # Async test support for FastAPI endpoints.
+pytest-cov==5.0.0         # Coverage reporting.
