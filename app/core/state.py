@@ -65,7 +65,9 @@ class AgentState(TypedDict, total=False):
     chunks: list[dict]
     # Output of PDFChunker. Each chunk:
     # {"text": str, "page": int, "filename": str, "doc_id": str,
-    #  "chunk_index": int, "context_prepended": bool}
+    #  "chunk_index": int, "word_count": int, "context_prepended": bool,
+    #  "original_text": str (set by contextual_enricher),
+    #  "context_text": str (set by contextual_enricher)}
 
     embeddings: list[list[float]]
     # embeddings[i] is the dense vector for chunks[i].
@@ -98,7 +100,8 @@ class AgentState(TypedDict, total=False):
     # ── Retrieval results ──────────────────────────────────────────────────────
     retrieved_chunks: list[dict]
     # Final top-k chunks after hybrid search + cross-encoder reranking.
-    # Each chunk: {text, page, filename, doc_id, rrf_score, rerank_score}
+    # Each chunk: {text, page, filename, doc_id, chunk_index,
+    #               rrf_score, rerank_score, source, original_text (optional)}
 
     kg_paths: list[dict]
     # Neo4j Cypher traversal results for graph-type queries.
@@ -127,7 +130,8 @@ class AgentState(TypedDict, total=False):
     sources: list[dict]
     # Formatted source list for client. Each source:
     # {"index": int, "text": str (truncated 300 chars),
-    #  "page": int, "filename": str, "doc_id": str, "rerank_score": float}
+    #  "page": int, "filename": str, "doc_id": str,
+    #  "chunk_index": int, "rerank_score": float}
 
     # ── Faithfulness judging ───────────────────────────────────────────────────
     faithfulness_score: float
