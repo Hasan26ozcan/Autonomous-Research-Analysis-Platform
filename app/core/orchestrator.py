@@ -1,174 +1,388 @@
 """
-ARAP — Main LangGraph Orchestration
-=====================================
-Assembles all specialist agents into two compiled graphs:
+app/core/orchestrator.py
+=========================
+Assembles every phase into two compiled LangGraph graphs and exposes
+a clean async API that the FastAPI layer (main.py) calls.
 
-  1. ingest_graph  — document processing pipeline
-     chunk → embed → contextual_enrich → store → kg_extract
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+THE TWO GRAPHS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  2. query_graph   — adaptive retrieval + generation pipeline
-     router → [direct | single | multi_hop | graph] → merge → generate
-     → judge → [retry? | memory_store] → respond
+INGEST GRAPH — one-time document processing per PDF upload
+─────────────────────────────────────────────────────────
+  chunk_document        (Phase 2) PDF → overlapping chunks with metadata
+      ↓
+  enrich_chunks         (Phase 3) prepend LLM context to each chunk
+      ↓
+  embed_chunks          (Phase 2) sentence-transformers → dense vectors
+      ↓
+  store_chunks          (Phase 2) upsert vectors + payload to Qdrant
+      ↓
+  index_chunks          (Phase 2) add chunk texts to BM25 in-memory corpus
+      ↓
+  extract_and_store_node (Phase 6) LLM triple extraction → Neo4j batch write
+      ↓
+  END
 
-The conditional edges implement the Adaptive RAG routing pattern:
-each query type follows a different path through the graph,
-avoiding unnecessary computation for simple queries
-and enabling rich multi-step reasoning for complex ones.
+QUERY GRAPH — per-request adaptive retrieval + generation
+──────────────────────────────────────────────────────────
+                     ┌─────────────────────────────────┐
+  router             │  Phase 4: classify + Mem0 fetch  │
+      ↓              └─────────────────────────────────┘
+  get_route() conditional edge:
+    "direct"    ──→ direct_answer ──────────────────────────────┐
+    "single"    ──→ retrieve       (Phase 5: HyDE+hybrid+rerank)│
+    "multi_hop" ──→ retrieve_multi (Phase 5: decompose+multi)   │
+    "graph"     ──→ graph_retrieve (Phase 6: Neo4j Cypher)      │
+                         ↓ (all three retrieval routes converge) │
+                    merge_results   (no-op, convergence point)   │
+                         ↓                                       │
+                    generate       (Phase 7: GPT-4o + context)   │
+                         ↓                                       │
+                    judge          (Phase 7: NLI faithfulness)   │
+                         ↓                                       │
+             should_retry() conditional edge:                    │
+               "generate"     ──→ generate  (retry loop)        │
+               "memory_store" ──→ memory_store ←────────────────┘
+                                       ↓
+                                      END
 
-LangSmith tracing is enabled automatically when LANGCHAIN_TRACING_V2=true.
-Every node execution appears as a named span in the LangSmith dashboard.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMPORT CONVENTION — singletons vs classes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Every agent module exposes a module-level singleton:
+  app.agents.router          → router_agent    (RouterAgent)
+  app.agents.retrieval_agent → retrieval_agent (RetrievalAgent)
+  app.agents.graph_agent     → kg_agent        (KnowledgeGraphAgent)
+  app.agents.generator       → generator       (AnswerGenerator)
+
+Service modules expose LangGraph-compatible node FUNCTIONS:
+  app.services.chunker             → chunk_document
+  app.services.contextual_enricher → enrich_chunks
+  app.services.embedder            → embed_chunks
+  app.services.vector_store        → store_chunks
+  app.services.bm25_index          → index_chunks
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LANGSMITH TRACING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Enabled automatically when LANGCHAIN_TRACING_V2=true in .env.
+Every LangGraph node appears as a named span in LangSmith:
+  - input/output state at each node
+  - per-node token counts and latency
+  - full conversation thread view via thread_id (= session_id)
+Zero code changes needed — LangSmith SDK intercepts at the LangChain layer.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REDIS CHECKPOINTER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The query graph uses a Redis-backed checkpointer keyed by session_id.
+This enables multi-turn conversations: every invocation restores the
+prior conversation state automatically via LangGraph's thread_id mechanism.
+The ingest graph does NOT use a checkpointer — ingestion is stateless
+(each PDF is processed independently; there is no conversation to persist).
 """
+
 from __future__ import annotations
-import os
+
 import asyncio
 import logging
+import os
 from typing import AsyncIterator
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.redis import RedisSaver
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.core.state import AgentState
 from app.core.config import settings
-from app.agents.router import router
+from app.core.state import AgentState
+
+# ── Phase 4: Adaptive Router ───────────────────────────────────────────────────
+from app.agents.router import router_agent
+
+# ── Phase 5: Retrieval Agent ───────────────────────────────────────────────────
 from app.agents.retrieval_agent import retrieval_agent
+
+# ── Phase 6: Knowledge Graph Agent ────────────────────────────────────────────
 from app.agents.graph_agent import kg_agent
+
+# ── Phase 7: Generator + Judge + Memory Store ─────────────────────────────────
 from app.agents.generator import generator
+
+# ── Phase 2 + Phase 3: Service node functions ─────────────────────────────────
+from app.services.chunker import chunk_document
+from app.services.contextual_enricher import enrich_chunks
+from app.services.embedder import embed_chunks
+from app.services.vector_store import store_chunks
+from app.services.bm25_index import index_chunks
 
 logger = logging.getLogger(__name__)
 
-# ── LangSmith tracing ──────────────────────────────────────────────────────────
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# LANGSMITH — enable at module load time if configured
+# Must happen before any LangChain/LangGraph objects are created.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 if settings.langchain_tracing_v2 and settings.langchain_api_key:
     os.environ["LANGCHAIN_TRACING_V2"] = "true"
     os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
     os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project
+    logger.info("LangSmith tracing enabled for project '%s'", settings.langchain_project)
 
 
-# ── Direct answer node (no retrieval) ─────────────────────────────────────────
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# INGEST GRAPH — helper nodes
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def direct_answer(state: AgentState) -> AgentState:
+# All ingest pipeline node functions are imported directly from service modules
+# (chunk_document, enrich_chunks, embed_chunks, store_chunks, index_chunks).
+# No additional wrapper needed — they already match the LangGraph node signature:
+#   (state: AgentState) -> dict   (partial state update)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# QUERY GRAPH — helper nodes
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def direct_answer(state: AgentState) -> dict:
     """
-    For 'direct' queries: LLM answers from parametric knowledge.
-    No retrieval. Skips the full pipeline for simple factual questions.
-    """
-    from langchain_openai import ChatOpenAI
-    from langchain_core.messages import HumanMessage, SystemMessage
+    LangGraph node: answer questions that need NO document retrieval.
 
+    Called when router_agent classifies query_type="direct" — meaning the
+    LLM already knows the answer from parametric knowledge (e.g. "What is
+    cosine similarity?"). Running retrieval for these questions wastes ~800ms
+    and adds context noise.
+
+    Uses router_model (gpt-4o-mini) because this is a lightweight generation
+    task — the question is conceptual, not document-specific. Saves llm_model
+    (gpt-4o) for the heavy generation in Phase 7 generator.
+
+    Injects long_term_memories from Mem0 (fetched by router in Phase 4)
+    so the answer can be personalized ("Given that you work with flood
+    prediction models...") even without document retrieval.
+
+    Reads from AgentState:
+        question            (str)
+        long_term_memories  (list[dict])  from Phase 4
+
+    Writes to AgentState:
+        answer              (str)   final answer (no judging needed for direct)
+        sources             (list)  empty (no documents cited)
+        faithfulness_score  (float) 1.0 (parametric knowledge, no hallucination risk)
+        judge_passed        (bool)  True (skip judge — nothing to ground-check)
+        draft_answer        (str)   same as answer (no judging step)
+    """
     llm = ChatOpenAI(
         model=settings.router_model,
         api_key=settings.openai_api_key,
         temperature=0.1,
     )
-    memories = state.get("long_term_memories", [])
-    mem_text = "\n".join(f"- {m['memory']}" for m in memories) if memories else ""
-    prompt = state["question"]
-    if mem_text:
-        prompt = f"[User context]\n{mem_text}\n\nQuestion: {prompt}"
 
-    resp = llm.invoke([
-        SystemMessage(content="You are a helpful AI assistant. Answer the user's question concisely."),
+    question: str = state.get("question", "")
+    memories: list[dict] = state.get("long_term_memories") or []
+
+    # Build personalization prefix from Mem0 memories
+    memory_lines = "\n".join(
+        f"- {m['memory']}"
+        for m in memories[:5]
+        if m.get("memory")
+    )
+    if memory_lines:
+        prompt = (
+            f"[User context from memory]\n{memory_lines}\n\n"
+            f"Question: {question}"
+        )
+    else:
+        prompt = question
+
+    response = llm.invoke([
+        SystemMessage(content=(
+            "You are a helpful AI assistant. "
+            "Answer the user's question concisely and accurately. "
+            "If user context is provided, personalize your answer accordingly."
+        )),
         HumanMessage(content=prompt),
     ])
+    answer = response.content.strip()
+
     return {
-        "answer": resp.content.strip(),
-        "sources": [],
+        "answer":            answer,
+        "draft_answer":      answer,
+        "sources":           [],
         "faithfulness_score": 1.0,
-        "judge_passed": True,
+        "judge_passed":      True,
     }
 
 
-# ── No-op merge node ───────────────────────────────────────────────────────────
-
-def merge_results(state: AgentState) -> AgentState:
+def merge_results(state: AgentState) -> dict:
     """
-    Collects results from parallel retrieval branches.
-    Currently a pass-through; could deduplicate chunks across branches.
+    LangGraph node: convergence point for all retrieval branches.
+
+    All three retrieval routes (retrieve, retrieve_multi, graph_retrieve)
+    connect to this node before passing to generate(). This node is
+    currently a no-op pass-through (returns empty dict = no state changes),
+    but it serves as a clean architectural convergence point.
+
+    Future enhancement: deduplicate retrieved_chunks if the graph and
+    retrieval agents returned overlapping chunks.
+
+    Returns {} — LangGraph merges an empty dict without modifying state.
     """
     return {}
 
 
-# ── Graph builders ─────────────────────────────────────────────────────────────
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ORCHESTRATOR CLASS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class ARAPOrchestrator:
     """
-    Builds and caches compiled LangGraph graphs.
-    Provides async streaming for WebSocket delivery.
+    Assembles all agent and service nodes into compiled LangGraph graphs
+    and provides the async API that FastAPI (main.py) calls.
+
+    Caching:
+        Both graphs are compiled once and cached in instance variables.
+        LangGraph compilation is expensive (validates graph structure,
+        resolves all edges, wires the checkpointer). Recompiling per
+        request would add 50-200ms overhead. The cached graphs are
+        thread-safe for concurrent invocation.
+
+    Checkpointer:
+        The query graph uses a Redis-backed LangGraph checkpointer.
+        Redis key = thread_id = session_id, so every session's state
+        is isolated and persisted across HTTP requests automatically.
+        The ingest graph has no checkpointer — it's stateless per run.
     """
 
     def __init__(self):
-        self._checkpointer = None
         self._ingest_graph = None
         self._query_graph = None
+        self._checkpointer = None
+
+    # ── Checkpointer ──────────────────────────────────────────────────────────
 
     @property
     def checkpointer(self):
-        """Redis-backed checkpointer for conversation persistence."""
+        """
+        Lazy Redis checkpointer — created on first query graph access.
+
+        RedisSaver stores LangGraph conversation state in Redis with
+        TTL = settings.session_ttl_seconds (default 1 hour).
+        Each session_id gets its own Redis key so sessions are isolated.
+
+        Falls back to None if Redis is unreachable — the graph still
+        works without checkpointing (no multi-turn memory, but no crash).
+        """
         if self._checkpointer is None:
-            self._checkpointer = RedisSaver.from_conn_string(settings.redis_url)
+            try:
+                from langgraph.checkpoint.redis import RedisSaver
+                self._checkpointer = RedisSaver.from_conn_string(settings.redis_url)
+                logger.info("LangGraph Redis checkpointer initialized.")
+            except Exception as e:
+                logger.warning(
+                    "Redis checkpointer init failed (multi-turn memory disabled): %s", e
+                )
+                self._checkpointer = None
         return self._checkpointer
 
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Graph builders
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
     def build_ingest_graph(self):
-        """Document ingestion pipeline."""
-        from app.services.chunker import chunk_document
-        from app.services.embedder import embed_chunks
-        from app.services.contextual_enricher import enrich_chunks
-        from app.services.vector_store import store_chunks
-        from app.services.bm25_index import index_chunks
+        """
+        Build and compile the document ingestion LangGraph.
 
+        Node execution order (strictly linear, no branching):
+          chunk_document        → PDF bytes → overlapping chunks (Phase 2)
+          enrich_chunks         → LLM context prepended to each chunk (Phase 3)
+          embed_chunks          → sentence-transformers dense vectors (Phase 2)
+          store_chunks          → Qdrant HNSW upsert (Phase 2)
+          index_chunks          → BM25 in-memory corpus update (Phase 2)
+          extract_and_store_node → Neo4j triple extraction + batch write (Phase 6)
+
+        Why enrich BEFORE embed?
+          The contextual enricher (Phase 3) prepends a 2-3 sentence context
+          description to each chunk's text. We embed the ENRICHED text so
+          the stored vectors encode both content AND document context.
+          If we embedded before enriching, we'd have to re-embed after,
+          doubling the embedding cost with no benefit.
+
+        Why KG extraction LAST?
+          KG extraction is the slowest step (~1 LLM call per chunk).
+          Running it last means the document is already fully searchable
+          via Qdrant + BM25 before KG extraction completes. If KG
+          extraction fails or times out, the document is still queryable
+          via vector and keyword search — graceful degradation.
+        """
         g = StateGraph(AgentState)
-        g.add_node("chunk", chunk_document)
-        g.add_node("embed", embed_chunks)
-        g.add_node("enrich", enrich_chunks)       # contextual retrieval
-        g.add_node("store_vectors", store_chunks)
-        g.add_node("index_bm25", index_chunks)
-        g.add_node("extract_kg", kg_agent.extract_and_store_node)
 
+        # Register all nodes with their LangGraph-compatible node functions
+        g.add_node("chunk",      chunk_document)                    # Phase 2
+        g.add_node("enrich",     enrich_chunks)                     # Phase 3
+        g.add_node("embed",      embed_chunks)                      # Phase 2
+        g.add_node("store",      store_chunks)                      # Phase 2
+        g.add_node("index_bm25", index_chunks)                      # Phase 2
+        g.add_node("extract_kg", kg_agent.extract_and_store_node)   # Phase 6
+
+        # Linear pipeline — each step feeds directly into the next
         g.set_entry_point("chunk")
-        g.add_edge("chunk", "embed")
-        g.add_edge("embed", "enrich")
-        g.add_edge("enrich", "store_vectors")
-        g.add_edge("store_vectors", "index_bm25")
+        g.add_edge("chunk",      "enrich")
+        g.add_edge("enrich",     "embed")
+        g.add_edge("embed",      "store")
+        g.add_edge("store",      "index_bm25")
         g.add_edge("index_bm25", "extract_kg")
         g.add_edge("extract_kg", END)
 
+        # No checkpointer for ingest — stateless per document
         return g.compile()
 
     def build_query_graph(self):
         """
-        Adaptive query pipeline with conditional routing.
+        Build and compile the adaptive query LangGraph.
 
-        Routing logic:
-          router → get_route() → {
-            "direct"    → direct_answer → memory_store → END
-            "single"    → retrieve → merge → generate → judge → ...
-            "multi_hop" → retrieve_multi_hop → merge → generate → judge → ...
-            "graph"     → graph_retrieve → merge → generate → judge → ...
-          }
+        Graph topology:
+          Entry: router
+          Branches: direct / retrieve / retrieve_multi / graph_retrieve
+          Convergence: merge → generate → judge
+          Retry loop: judge → (rejected) → generate → judge
+          Exit: memory_store → END
 
-          judge → should_retry() → {
-            judge_passed or max_retries → memory_store → END
-            else                        → generate (retry with stricter prompt)
-          }
+        Conditional edges:
+          1. router → get_route() → {direct, single, multi_hop, graph}
+             Routes to the appropriate retrieval strategy per query.
+          2. judge → should_retry() → {generate, memory_store}
+             Loops back to generate if faithfulness score is too low,
+             proceeds to memory_store when judge approves or retries exhausted.
+
+        The retry loop is the graph's only cycle. LangGraph supports cycles
+        explicitly (unlike DAG-only frameworks) — this is one of the reasons
+        we chose LangGraph over plain LangChain for ARAP.
         """
         g = StateGraph(AgentState)
 
-        # Nodes
-        g.add_node("router", router.route)
-        g.add_node("direct", direct_answer)
-        g.add_node("retrieve", retrieval_agent.retrieve)
-        g.add_node("retrieve_multi", retrieval_agent.retrieve_multi_hop)
-        g.add_node("graph_retrieve", kg_agent.graph_retrieve)
-        g.add_node("merge", merge_results)
-        g.add_node("generate", generator.generate)
-        g.add_node("judge", generator.judge)
-        g.add_node("memory_store", generator.store_memory)
+        # ── Register all nodes ─────────────────────────────────────────────────
+        g.add_node("router",         router_agent.route)           # Phase 4
+        g.add_node("direct",         direct_answer)                # Phase 8 (this file)
+        g.add_node("retrieve",       retrieval_agent.retrieve)     # Phase 5
+        g.add_node("retrieve_multi", retrieval_agent.retrieve_multi) # Phase 5
+        g.add_node("graph_retrieve", kg_agent.graph_retrieve)      # Phase 6
+        g.add_node("merge",          merge_results)                # Phase 8 (this file)
+        g.add_node("generate",       generator.generate)           # Phase 7
+        g.add_node("judge",          generator.judge)              # Phase 7
+        g.add_node("memory_store",   generator.store_memory)       # Phase 7
 
-        # Entry
+        # ── Entry point ────────────────────────────────────────────────────────
         g.set_entry_point("router")
 
-        # Conditional routing after router
+        # ── Conditional edge 1: router → retrieval branch ─────────────────────
+        # router_agent.get_route() reads query_type from state and returns
+        # one of "direct", "single", "multi_hop", "graph".
+        # The map below translates each value to the corresponding node name.
         g.add_conditional_edges(
             "router",
-            router.get_route,
+            router_agent.get_route,
             {
                 "direct":    "direct",
                 "single":    "retrieve",
@@ -177,14 +391,19 @@ class ARAPOrchestrator:
             },
         )
 
-        # All retrieval paths converge at merge
+        # ── All retrieval branches converge at merge ───────────────────────────
         g.add_edge("retrieve",       "merge")
         g.add_edge("retrieve_multi", "merge")
         g.add_edge("graph_retrieve", "merge")
-        g.add_edge("merge",          "generate")
-        g.add_edge("generate",       "judge")
 
-        # Judge conditional: retry or finish
+        # ── Linear: merge → generate → judge ──────────────────────────────────
+        g.add_edge("merge",    "generate")
+        g.add_edge("generate", "judge")
+
+        # ── Conditional edge 2: judge → retry loop or proceed ─────────────────
+        # generator.should_retry() reads judge_passed from state.
+        # "generate" → retry (loop back with stricter prompt)
+        # "memory_store" → proceed to persist and finish
         g.add_conditional_edges(
             "judge",
             generator.should_retry,
@@ -194,39 +413,80 @@ class ARAPOrchestrator:
             },
         )
 
+        # ── Direct path also flows through memory_store ────────────────────────
+        # Even direct answers are stored in Mem0 for long-term memory.
         g.add_edge("direct",       "memory_store")
+
+        # ── Terminal edge ──────────────────────────────────────────────────────
         g.add_edge("memory_store", END)
 
+        # Compile WITH Redis checkpointer for multi-turn conversation support
         return g.compile(checkpointer=self.checkpointer)
+
+    # ── Cached graph properties ───────────────────────────────────────────────
 
     @property
     def ingest_graph(self):
+        """Lazy compile and cache the ingest graph."""
         if self._ingest_graph is None:
+            logger.info("Compiling ingest graph...")
             self._ingest_graph = self.build_ingest_graph()
+            logger.info("Ingest graph compiled.")
         return self._ingest_graph
 
     @property
     def query_graph(self):
+        """Lazy compile and cache the query graph."""
         if self._query_graph is None:
+            logger.info("Compiling query graph...")
             self._query_graph = self.build_query_graph()
+            logger.info("Query graph compiled.")
         return self._query_graph
 
-    # ── Public API ─────────────────────────────────────────────────────────────
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Public Async API — called by FastAPI endpoints
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     async def ingest(self, pdf_bytes: bytes, filename: str) -> dict:
-        init: AgentState = {
-            "raw_bytes": pdf_bytes,
-            "filename": filename,
-            "chunks": [],
-            "embeddings": [],
+        """
+        Run the ingest pipeline for one PDF.
+
+        Delegates to ingest_graph.invoke() via asyncio.to_thread() because
+        LangGraph's synchronous invoke() would block the FastAPI event loop.
+        All LLM calls inside the graph (enricher, KG extractor) are
+        synchronous ChatOpenAI calls — running them in a thread pool keeps
+        the async event loop responsive to other requests during ingestion.
+
+        Args:
+            pdf_bytes: Raw PDF binary from the uploaded file.
+            filename:  Original filename for metadata and source attribution.
+
+        Returns:
+            {
+                "doc_id":      str,  SHA-256 content hash (first 16 hex chars)
+                "chunk_count": int,  total chunks stored in Qdrant + BM25
+                "kg_triples":  int,  total entity-relation triples in Neo4j
+            }
+        """
+        init_state: AgentState = {
+            "raw_bytes":   pdf_bytes,
+            "filename":    filename,
+            "chunks":      [],
+            "embeddings":  [],
             "chunk_count": 0,
             "kg_entities": [],
         }
-        final = await asyncio.to_thread(self.ingest_graph.invoke, init)
+
+        # Run the blocking graph in a thread pool to avoid blocking event loop
+        final_state = await asyncio.to_thread(
+            self.ingest_graph.invoke,
+            init_state,
+        )
+
         return {
-            "doc_id": final.get("doc_id"),
-            "chunk_count": final.get("chunk_count", 0),
-            "kg_triples": len(final.get("kg_entities", [])),
+            "doc_id":      final_state.get("doc_id"),
+            "chunk_count": final_state.get("chunk_count", 0),
+            "kg_triples":  len(final_state.get("kg_entities") or []),
         }
 
     async def query(
@@ -235,25 +495,60 @@ class ARAPOrchestrator:
         session_id: str,
         user_id: str,
         doc_id: str | None = None,
-        top_k: int = 5,
+        top_k: int = settings.top_k_final,
     ) -> dict:
-        init: AgentState = {
-            "question": question,
-            "session_id": session_id,
-            "user_id": user_id,
-            "doc_id": doc_id,
-            "top_k": top_k,
+        """
+        Run the full adaptive query pipeline for one question.
+
+        Returns the final answer, sources, and observability metadata.
+        This is a synchronous-result endpoint — the caller waits for
+        the complete pipeline to finish before receiving a response.
+
+        For real-time streaming, use stream_query() instead.
+
+        Args:
+            question:   Raw user question string.
+            session_id: Unique conversation identifier (e.g. browser tab UUID).
+                        Used as LangGraph thread_id for Redis checkpointing.
+            user_id:    Stable user identifier for Mem0 memory personalization.
+            doc_id:     Optional — scope retrieval to a single document.
+                        None = search across all ingested documents.
+            top_k:      Number of chunks to send to the generator.
+
+        Returns:
+            {
+                "answer":            str,         final approved answer
+                "sources":           list[dict],  formatted source citations
+                "query_type":        str,          "direct"|"single"|"multi_hop"|"graph"
+                "faithfulness_score": float,       NLI entailment score (0.0-1.0)
+                "latency_ms":        dict,         per-node timing breakdown
+            }
+        """
+        init_state: AgentState = {
+            "question":    question,
+            "session_id":  session_id,
+            "user_id":     user_id,
+            "doc_id":      doc_id,
+            "top_k":       top_k,
             "retry_count": 0,
-            "latency_ms": {},
+            "latency_ms":  {},
         }
+
+        # LangGraph thread_id = session_id → Redis checkpoint key
         config = {"configurable": {"thread_id": session_id}}
-        final = await asyncio.to_thread(self.query_graph.invoke, init, config)
+
+        final_state = await asyncio.to_thread(
+            self.query_graph.invoke,
+            init_state,
+            config,
+        )
+
         return {
-            "answer": final.get("answer", ""),
-            "sources": final.get("sources", []),
-            "query_type": final.get("query_type"),
-            "faithfulness_score": final.get("faithfulness_score"),
-            "latency_ms": final.get("latency_ms", {}),
+            "answer":             final_state.get("answer", ""),
+            "sources":            final_state.get("sources") or [],
+            "query_type":         final_state.get("query_type"),
+            "faithfulness_score": final_state.get("faithfulness_score"),
+            "latency_ms":         final_state.get("latency_ms") or {},
         }
 
     async def stream_query(
@@ -264,30 +559,136 @@ class ARAPOrchestrator:
         doc_id: str | None = None,
     ) -> AsyncIterator[dict]:
         """
-        Yield intermediate state updates as the graph executes.
-        Used for WebSocket streaming — client sees retrieval progress,
-        then judge result, then final answer.
+        Stream intermediate state updates as the query graph executes.
+
+        Used by the WebSocket endpoint in main.py. The client receives
+        one event per LangGraph node execution, enabling real-time UI
+        updates:
+          {"node": "router",       "data": {"query_type": "single", ...}}
+          {"node": "retrieve",     "data": {"retrieved_chunks": [...], ...}}
+          {"node": "generate",     "data": {"draft_answer": "...", ...}}
+          {"node": "judge",        "data": {"faithfulness_score": 0.91, ...}}
+          {"node": "memory_store", "data": {}}
+
+        Non-serializable fields (raw_bytes, embeddings) are stripped from
+        every update before yielding — they are large, not useful to clients,
+        and cannot be JSON-serialized.
+
+        Args:
+            question:   Raw user question.
+            session_id: Conversation thread identifier.
+            user_id:    Mem0 user identifier.
+            doc_id:     Optional document scope filter.
+
+        Yields:
+            {"node": str, "data": dict}  one dict per node execution
         """
-        init: AgentState = {
-            "question": question,
-            "session_id": session_id,
-            "user_id": user_id,
-            "doc_id": doc_id,
-            "top_k": settings.top_k_final,
+        init_state: AgentState = {
+            "question":    question,
+            "session_id":  session_id,
+            "user_id":     user_id,
+            "doc_id":      doc_id,
+            "top_k":       settings.top_k_final,
             "retry_count": 0,
-            "latency_ms": {},
+            "latency_ms":  {},
         }
         config = {"configurable": {"thread_id": session_id}}
 
-        for event in self.query_graph.stream(init, config, stream_mode="updates"):
+        # query_graph.stream() yields one event per node, mode="updates"
+        # means each event is {node_name: partial_state_update}
+        for event in self.query_graph.stream(init_state, config, stream_mode="updates"):
             for node_name, node_output in event.items():
-                yield {"node": node_name, "data": _safe_serialize(node_output)}
+                yield {
+                    "node": node_name,
+                    "data": _safe_serialize(node_output),
+                }
 
+    async def health(self) -> dict:
+        """
+        Check reachability of all infrastructure components.
+
+        Called by the /health FastAPI endpoint. Each check is
+        independent — one failure does not block the others.
+
+        Returns:
+            {
+                "qdrant": "ok" | "unreachable",
+                "neo4j":  "ok" | "unreachable",
+                "redis":  "ok" | "unreachable",
+            }
+        """
+        status: dict[str, str] = {}
+
+        # Qdrant
+        try:
+            from qdrant_client import QdrantClient
+            client = QdrantClient(
+                host=settings.qdrant_host,
+                port=settings.qdrant_port,
+                timeout=2,
+            )
+            client.get_collections()
+            status["qdrant"] = "ok"
+        except Exception:
+            status["qdrant"] = "unreachable"
+
+        # Neo4j
+        try:
+            from neo4j import GraphDatabase
+            driver = GraphDatabase.driver(
+                settings.neo4j_uri,
+                auth=(settings.neo4j_user, settings.neo4j_password),
+            )
+            driver.verify_connectivity()
+            driver.close()
+            status["neo4j"] = "ok"
+        except Exception:
+            status["neo4j"] = "unreachable"
+
+        # Redis
+        try:
+            import redis as redis_lib
+            r = redis_lib.from_url(settings.redis_url, socket_connect_timeout=2)
+            r.ping()
+            status["redis"] = "ok"
+        except Exception:
+            status["redis"] = "unreachable"
+
+        return status
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Helpers
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def _safe_serialize(state: dict) -> dict:
-    """Strip non-serializable fields (bytes, embeddings) before JSON streaming."""
-    skip = {"raw_bytes", "embeddings"}
-    return {k: v for k, v in state.items() if k not in skip and v is not None}
+    """
+    Strip non-JSON-serializable fields from a state update before streaming.
+
+    Fields stripped:
+      raw_bytes   — PDF binary data (bytes, not JSON-serializable, large)
+      embeddings  — float vectors (list[list[float]], very large, not useful to client)
+
+    Also strips None values — clients should treat missing keys as None.
+
+    Args:
+        state: A partial state update dict from a LangGraph node.
+
+    Returns:
+        Cleaned dict safe for json.dumps() and WebSocket delivery.
+    """
+    _STRIP = {"raw_bytes", "embeddings"}
+    return {
+        k: v
+        for k, v in state.items()
+        if k not in _STRIP and v is not None
+    }
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Module-Level Singleton
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Imported by FastAPI main.py as:
+#   from app.core.orchestrator import orchestrator
 orchestrator = ARAPOrchestrator()
