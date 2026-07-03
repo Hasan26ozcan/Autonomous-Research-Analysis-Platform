@@ -20,14 +20,14 @@ services:
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
       - REDIS_URL=redis://redis:6379/0
       - POSTGRES_URL=postgresql://user:password@postgres:5432/arap
-      - MEM0_BASE_URL=http://mem0:3000
+      - MEM0_BASE_URL=http://host.docker.internal:3000
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
     depends_on:
-      qdrant:  { condition: service_healthy }
-      neo4j:   { condition: service_healthy }
-      redis:   { condition: service_healthy }
-      postgres: { condition: service_healthy }
+      - qdrant
+      - neo4j
+      - redis
+      - postgres
     volumes:
       - ./:/app
     restart: unless-stopped
@@ -45,6 +45,7 @@ services:
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
       - REDIS_URL=redis://redis:6379/0
       - POSTGRES_URL=postgresql://user:password@postgres:5432/arap
+      - MEM0_BASE_URL=http://host.docker.internal:3000
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
     depends_on: [redis, qdrant, neo4j, postgres]
@@ -63,10 +64,10 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:6333/healthz"]
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:6333/collections || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
     restart: unless-stopped
 
   # ── Neo4j Knowledge Graph ───────────────────────────────────────────────────

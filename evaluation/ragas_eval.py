@@ -1,36 +1,35 @@
 """
-RAGAS Evaluation Suite
-=======================
-Measures four standard RAG quality dimensions (2026 standard):
+ARAP RAGAS and Evaluation Suite
+===============================
 
-  faithfulness      — Are answer claims supported by the retrieved context?
-                      Computed via NLI entailment between answer sentences and chunks.
+This module provides a comprehensive evaluation workflow for the ARAP system.
+It is intended for both development-time validation and production monitoring
+of the adaptive RAG pipeline.
 
-  answer_relevancy  — Is the answer responsive to the question?
-                      Computed by embedding the answer, reverse-generating questions,
-                      and measuring cosine similarity to the original.
+The suite covers:
+- loading realistic Q/A examples from PostgreSQL query history,
+- running them through the live orchestrator,
+- collecting the generated answer, retrieved sources, and faithfulness signal,
+- executing standard RAGAS metrics when the optional dependencies are present,
+- saving a structured JSON report for later analysis or CI/CD use.
 
-  context_precision — Are the retrieved chunks actually useful?
-                      High precision = fewer irrelevant chunks retrieved.
-
-  context_recall    — Did retrieval capture all the information needed?
-                      Measured against ground-truth answer coverage.
-
-Test set:
-  Loaded from PostgreSQL query_history table (populated during normal use).
-  Falls back to built-in seed questions if the table is empty.
-
-Reference:
-  RAGAS: "RAGAS: Automated Evaluation of Retrieval Augmented Generation"
-  (Es et al., 2023) — arXiv:2309.15217
+Example:
+    python -m evaluation.ragas_eval --limit 20 --save reports/ragas_report.json
 """
 from __future__ import annotations
+
+import argparse
 import asyncio
+import json
 import logging
+import os
+import sys
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SEED_QA = [
+SEED_QA: list[dict[str, str]] = [
     {
         "question": "What is the main contribution of this document?",
         "ground_truth": "The document presents its main contribution in the introduction or abstract.",
@@ -51,18 +50,29 @@ SEED_QA = [
         "question": "Who are the target users or audience of this document?",
         "ground_truth": "The document targets practitioners or researchers in its subject domain.",
     },
+    {
+        "question": "What datasets or benchmarks are referenced?",
+        "ground_truth": "The document references one or more datasets or benchmark tasks used for validation.",
+    },
+    {
+        "question": "How does the proposed method compare to baselines?",
+        "ground_truth": "The document explains how the proposed method improves over the baseline methods.",
+    },
 ]
 
 
-async def _load_test_set(limit: int = 20) -> list[dict]:
-    """Load real user Q&A pairs from PostgreSQL query_history."""
+async def _load_test_set(limit: int = 20, include_seed: bool = True) -> list[dict[str, str]]:
+    """Load real Q/A pairs from PostgreSQL query_history when possible."""
     try:
         import asyncpg
+
         from app.core.config import settings
+
         conn = await asyncpg.connect(settings.postgres_url)
         rows = await conn.fetch(
             """
-            SELECT question, answer FROM query_history
+            SELECT question, answer
+            FROM query_history
             WHERE answer IS NOT NULL AND LENGTH(answer) > 20
             ORDER BY created_at DESC
             LIMIT $1
@@ -71,82 +81,286 @@ async def _load_test_set(limit: int = 20) -> list[dict]:
         )
         await conn.close()
         if rows:
-            return [{"question": r["question"], "ground_truth": r["answer"]} for r in rows]
-    except Exception as e:
-        logger.warning("Could not load test set from DB (using seed): %s", e)
-    return SEED_QA
+            return [
+                {"question": str(r["question"]), "ground_truth": str(r["answer"])}
+                for r in rows
+            ]
+    except Exception as exc:
+        logger.warning(
+            "Could not load evaluation set from PostgreSQL; using seed questions. Error: %s",
+            exc,
+        )
+
+    if include_seed:
+        return SEED_QA[:limit]
+    return []
 
 
-async def run_ragas(orchestrator) -> dict:
+async def _run_single_query(orchestrator: Any, item: dict[str, str]) -> dict[str, Any]:
+    """Run one evaluation item through the live orchestrator."""
+    try:
+        result = await orchestrator.query(
+            question=item["question"],
+            session_id="ragas-eval",
+            user_id="ragas",
+        )
+    except Exception as exc:
+        logger.warning("Evaluation query failed for '%s': %s", item["question"][:50], exc)
+        return {
+            "question": item["question"],
+            "answer": "",
+            "contexts": [],
+            "ground_truth": item.get("ground_truth", ""),
+            "query_type": None,
+            "faithfulness_score": None,
+            "latency_ms": {},
+            "error": str(exc),
+        }
+
+    sources = result.get("sources") or []
+    contexts: list[str] = []
+    for source in sources:
+        text = source.get("text") if isinstance(source, dict) else None
+        if text:
+            contexts.append(str(text))
+
+    return {
+        "question": item["question"],
+        "answer": result.get("answer") or "",
+        "contexts": contexts,
+        "ground_truth": item.get("ground_truth", ""),
+        "query_type": result.get("query_type"),
+        "faithfulness_score": result.get("faithfulness_score"),
+        "latency_ms": result.get("latency_ms") or {},
+        "error": None,
+    }
+
+
+async def run_ragas_evaluation(
+    orchestrator: Any,
+    limit: int = 20,
+    include_seed: bool = True,
+    save_path: str | None = None,
+) -> dict[str, Any]:
     """
-    Execute RAGAS evaluation. Returns a dict of metric scores.
+    Run the full evaluation workflow.
+
+    The function returns a structured report with:
+    - standard RAGAS metrics when the optional dependencies are installed,
+    - a fallback heuristic summary when they are not,
+    - per-question execution details,
+    - overall success statistics.
     """
     try:
         from ragas import evaluate
         from ragas.metrics import (
-            faithfulness,
             answer_relevancy,
             context_precision,
             context_recall,
+            faithfulness,
         )
         from datasets import Dataset
-    except ImportError:
-        return {
-            "error": "Install RAGAS: pip install ragas datasets",
+    except ImportError as exc:
+        logger.warning("RAGAS dependencies are not available: %s", exc)
+        return _build_fallback_report(
+            orchestrator=orchestrator,
+            limit=limit,
+            include_seed=include_seed,
+            save_path=save_path,
+            reason=str(exc),
+        )
+
+    test_set = await _load_test_set(limit=limit, include_seed=include_seed)
+    logger.info("Starting RAGAS evaluation over %d questions", len(test_set))
+
+    processed: list[dict[str, Any]] = []
+    for item in test_set:
+        processed.append(await _run_single_query(orchestrator, item))
+
+    successful = [
+        record for record in processed if not record.get("error") and bool(record.get("answer"))
+    ]
+    if not successful:
+        report = {
+            "status": "failed",
+            "error": "No evaluation questions could be processed successfully.",
+            "metrics": {
+                "faithfulness": None,
+                "answer_relevancy": None,
+                "context_precision": None,
+                "context_recall": None,
+            },
+            "num_questions": 0,
+            "processed": processed,
+        }
+        if save_path:
+            _write_report(report, save_path)
+        return report
+
+    dataset = Dataset.from_dict(
+        {
+            "question": [record["question"] for record in successful],
+            "answer": [record["answer"] for record in successful],
+            "contexts": [record["contexts"] for record in successful],
+            "ground_truth": [record["ground_truth"] for record in successful],
+        }
+    )
+
+    try:
+        ragas_result = evaluate(
+            dataset,
+            metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
+        )
+    except Exception as exc:
+        logger.exception("RAGAS execution failed: %s", exc)
+        report = {
+            "status": "failed",
+            "error": f"RAGAS execution failed: {exc}",
+            "metrics": {
+                "faithfulness": None,
+                "answer_relevancy": None,
+                "context_precision": None,
+                "context_recall": None,
+            },
+            "num_questions": len(successful),
+            "processed": processed,
+        }
+        if save_path:
+            _write_report(report, save_path)
+        return report
+
+    report = {
+        "status": "ok",
+        "metrics": {
+            "faithfulness": _round_metric(ragas_result.get("faithfulness")),
+            "answer_relevancy": _round_metric(ragas_result.get("answer_relevancy")),
+            "context_precision": _round_metric(ragas_result.get("context_precision")),
+            "context_recall": _round_metric(ragas_result.get("context_recall")),
+        },
+        "num_questions": len(successful),
+        "processed": processed,
+        "summary": {
+            "questions_attempted": len(test_set),
+            "questions_succeeded": len(successful),
+            "questions_failed": len(processed) - len(successful),
+            "average_faithfulness": _average(
+                [record.get("faithfulness_score") for record in successful if record.get("faithfulness_score") is not None]
+            ),
+        },
+    }
+
+    if save_path:
+        _write_report(report, save_path)
+
+    logger.info("RAGAS report: %s", report)
+    return report
+
+
+async def _build_fallback_report(
+    orchestrator: Any,
+    limit: int,
+    include_seed: bool,
+    save_path: str | None,
+    reason: str,
+) -> dict[str, Any]:
+    """Generate a usable report even when RAGAS itself is unavailable."""
+    test_set = await _load_test_set(limit=limit, include_seed=include_seed)
+    processed: list[dict[str, Any]] = []
+    for item in test_set:
+        processed.append(await _run_single_query(orchestrator, item))
+
+    successful = [record for record in processed if not record.get("error") and bool(record.get("answer"))]
+    report = {
+        "status": "partial",
+        "error": reason,
+        "metrics": {
             "faithfulness": None,
             "answer_relevancy": None,
             "context_precision": None,
             "context_recall": None,
-        }
+        },
+        "num_questions": len(successful),
+        "processed": processed,
+        "summary": {
+            "questions_attempted": len(test_set),
+            "questions_succeeded": len(successful),
+            "questions_failed": len(processed) - len(successful),
+            "average_faithfulness": _average(
+                [record.get("faithfulness_score") for record in successful if record.get("faithfulness_score") is not None]
+            ),
+        },
+    }
+    if save_path:
+        _write_report(report, save_path)
+    return report
 
-    test_set = await _load_test_set()
-    logger.info("RAGAS: running evaluation on %d questions", len(test_set))
 
-    questions, answers, contexts, ground_truths = [], [], [], []
+def _round_metric(value: Any) -> float | None:
+    """Normalize a metric value to a float or None."""
+    if value is None:
+        return None
+    try:
+        return round(float(value), 4)
+    except (TypeError, ValueError):
+        return None
 
-    for item in test_set:
-        try:
-            result = await orchestrator.query(
-                question=item["question"],
-                session_id="ragas-eval",
-                user_id="ragas",
-            )
-            questions.append(item["question"])
-            answers.append(result["answer"])
-            contexts.append([s["text"] for s in result["sources"]])
-            ground_truths.append(item["ground_truth"])
-        except Exception as e:
-            logger.warning("RAGAS: query failed for '%s': %s", item["question"][:50], e)
 
-    if not questions:
-        return {"error": "No evaluation questions could be processed."}
+def _average(values: list[float | None]) -> float | None:
+    """Compute the average of numeric values."""
+    numeric_values = [float(v) for v in values if v is not None]
+    if not numeric_values:
+        return None
+    return round(sum(numeric_values) / len(numeric_values), 4)
 
-    dataset = Dataset.from_dict({
-        "question": questions,
-        "answer": answers,
-        "contexts": contexts,
-        "ground_truth": ground_truths,
-    })
 
-    result = evaluate(
-        dataset,
-        metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
+def _write_report(report: dict[str, Any], save_path: str | None) -> None:
+    """Persist the evaluation report to disk as JSON."""
+    if not save_path:
+        return
+    path = Path(save_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
+    """Create a CLI parser for running evaluation from the shell."""
+    parser = argparse.ArgumentParser(description="Run ARAP RAGAS and evaluation suite")
+    parser.add_argument("--limit", type=int, default=20, help="How many questions to evaluate")
+    parser.add_argument("--save", type=str, default=None, help="Optional JSON path to store the report")
+    parser.add_argument("--no-seed", action="store_true", help="Do not fall back to seeded questions")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    return parser
+
+
+async def main() -> int:
+    """CLI entrypoint used by python -m evaluation.ragas_eval."""
+    parser = build_argument_parser()
+    args = parser.parse_args()
+
+    if args.verbose:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        )
+    else:
+        logging.basicConfig(
+            level=logging.WARNING,
+            format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        )
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from app.core.orchestrator import orchestrator
+
+    report = await run_ragas_evaluation(
+        orchestrator=orchestrator,
+        limit=args.limit,
+        include_seed=not args.no_seed,
+        save_path=args.save,
     )
 
-    scores = {
-        "faithfulness": round(float(result["faithfulness"]), 4),
-        "answer_relevancy": round(float(result["answer_relevancy"]), 4),
-        "context_precision": round(float(result["context_precision"]), 4),
-        "context_recall": round(float(result["context_recall"]), 4),
-        "num_questions": len(questions),
-    }
-    logger.info("RAGAS scores: %s", scores)
-    return scores
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    return 0 if report.get("status") in {"ok", "partial"} else 1
 
 
 if __name__ == "__main__":
-    import sys, os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from app.core.orchestrator import orchestrator as orc
-    scores = asyncio.run(run_ragas(orc))
-    print(scores)
+    raise SystemExit(asyncio.run(main()))
