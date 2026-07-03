@@ -1,0 +1,36 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+
+    env:
+      # Dummy values so module-level clients (ChatOpenAI, etc.) can be
+      # instantiated at import time. Unit tests mock all external calls,
+      # so no real credentials are needed to run this suite.
+      OPENAI_API_KEY: "sk-test-dummy-key-for-ci"
+      NEO4J_PASSWORD: "test-password"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: pytest tests/unit -v --cov=app --cov-report=term-missing
