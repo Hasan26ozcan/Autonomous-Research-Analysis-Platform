@@ -313,14 +313,53 @@ class KnowledgeGraphAgent:
     """
 
     def __init__(self):
-        # response_format json_object forces valid JSON, same pattern as router.py
+        # NOTE: previously used response_format={"type": "json_object"}. On
+        # Groq's openai/gpt-oss-20b (a reasoning model), plain "json_object"
+        # mode intermittently fails with HTTP 400 "Failed to generate JSON.
+        # Please adjust your prompt" - the model's internal reasoning tokens
+        # sometimes leak into the output and break strict JSON parsing.
+        # Groq's "json_schema" strict mode constrains the model to an exact
+        # schema and is documented as far more reliable for structured
+        # extraction: https://console.groq.com/docs/structured-outputs
         self.extraction_llm = ChatOpenAI(
             model=settings.router_model,
             api_key=settings.openai_api_key,
             base_url=settings.llm_base_url,
             temperature=0.0,
-            response_format={"type": "json_object"},
-            max_tokens=600,    # up to 8 triples in JSON needs more room than routing
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "triple_extraction_result",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "triples": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "head": {"type": "string"},
+                                        "relation": {"type": "string"},
+                                        "tail": {"type": "string"},
+                                        "confidence": {"type": "number"},
+                                    },
+                                    "required": ["head", "relation", "tail", "confidence"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                        "required": ["triples"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            max_tokens=1200,   # up to 8 triples in JSON needs more room than routing
+            # NOTE: reasoning_effort was tried here to reduce hidden "thinking"
+            # tokens on Groq's reasoning models, but combining it with strict
+            # json_schema mode caused a client-side TypeError instead of the
+            # earlier 400 - reverted. max_tokens alone (raised from 600) gives
+            # enough room for both reasoning and the JSON output.
         )
         self.cypher_llm = ChatOpenAI(
             model=settings.router_model,
@@ -585,7 +624,23 @@ class KnowledgeGraphAgent:
             logger.warning("KG extraction: JSON parse error (skipping chunk): %s", e)
             return []
         except Exception as e:
-            logger.warning("KG extraction: failed for chunk (skipping): %s", str(e)[:120])
+            # tenacity's RetryError only repr()s a Future object by default
+            # ("RetryError[<Future ... state=finished raised TypeError>]"),
+            # which hides the actual error message and made earlier bugs in
+            # this method much harder to diagnose from logs alone. Unwrap the
+            # real underlying exception (if this is a tenacity RetryError) so
+            # the log line always shows the actual message.
+            underlying = e
+            last_attempt = getattr(e, "last_attempt", None)
+            if last_attempt is not None:
+                try:
+                    underlying = last_attempt.exception() or e
+                except Exception:
+                    underlying = e
+            logger.warning(
+                "KG extraction: failed for chunk (skipping): %s: %s",
+                type(underlying).__name__, str(underlying)[:200],
+            )
             return []
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
