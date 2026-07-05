@@ -455,7 +455,12 @@ class KnowledgeGraphAgent:
         all_triples: list[Triple] = []
         chunks_with_triples = 0
 
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
+            # Proactive pacing - see contextual_enricher.enrich() for the
+            # same technique and rationale (avoid 429s instead of retrying).
+            if i > 0 and settings.llm_call_min_interval_seconds > 0:
+                time.sleep(settings.llm_call_min_interval_seconds)
+
             # Use original_text if available (post Phase-3 enrichment) to avoid
             # extracting entities from our own "[Context: ...]" wrapper text.
             text_for_extraction = chunk.get("original_text") or chunk.get("text", "")

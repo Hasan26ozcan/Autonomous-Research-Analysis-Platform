@@ -256,7 +256,15 @@ class ContextualEnricher:
         enriched_chunks: list[dict] = []
         success_count = 0
 
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
+            # Proactive pacing: wait BEFORE each call (except the very first)
+            # so we never fire requests faster than the provider's per-minute
+            # limit allows. This avoids 429s instead of retrying after them.
+            if i > 0 and settings.llm_call_min_interval_seconds > 0:
+                cache_key = (chunk.get("doc_id", ""), chunk.get("chunk_index", 0))
+                if cache_key not in self._cache:
+                    time.sleep(settings.llm_call_min_interval_seconds)
+
             enriched = self._enrich_single_chunk(chunk, doc_anchor)
             enriched_chunks.append(enriched)
             if enriched.get("context_prepended"):

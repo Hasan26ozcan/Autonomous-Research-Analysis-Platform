@@ -50,12 +50,42 @@ class Settings(BaseSettings):
             "hold whatever key that provider expects."
         ),
     )
+    llm_rpm_limit: int = Field(
+        default=25,
+        description=(
+            "Requests-per-minute budget used by the proactive rate limiter "
+            "(app/services/rate_limiter.py) shared by every LLM call site. "
+            "Kept a bit under Groq's typical free-tier 30 RPM cap for safety "
+            "margin. Raise this if using a provider/plan with higher limits."
+        ),
+    )
+    llm_tpm_limit: int = Field(
+        default=5000,
+        description=(
+            "Tokens-per-minute budget used by the proactive rate limiter. "
+            "Kept a bit under Groq's typical free-tier 6,000-8,000 TPM cap "
+            "for safety margin. Raise this if using a provider/plan with "
+            "higher limits (e.g. real OpenAI, which is far more generous)."
+        ),
+    )
     llm_model: str = Field(default="gpt-4o", description="Primary generation model")
     router_model: str = Field(default="gpt-4o-mini", description="Fast model for routing/rewriting")
     judge_model: str = Field(default="gpt-4o-mini", description="Fallback LLM judge model")
     temperature: float = Field(default=0.1, description="Low temperature for factual RAG")
     max_tokens: int = Field(default=2048)
     max_retries: int = Field(default=2, description="Max faithfulness retry attempts")
+    llm_call_min_interval_seconds: float = Field(
+        default=0.0,
+        description=(
+            "Minimum pause (seconds) inserted BEFORE each chunk-level LLM call "
+            "during ingestion (contextual enrichment, KG extraction). Default 0 "
+            "= no pacing, for providers with generous/no per-minute limits. "
+            "For free-tier providers like Groq (30 requests/min, 6000 tokens/min "
+            "on most models), set this to ~2.5 so N sequential chunk calls stay "
+            "under ~24 requests/min with margin, avoiding 429s proactively "
+            "instead of hitting them and retrying reactively."
+        ),
+    )
 
     # ── Embedding ─────────────────────────────────────────────────────────────
     # Default: MiniLM-L6-v2 (384 dims, CPU-friendly, fast)
