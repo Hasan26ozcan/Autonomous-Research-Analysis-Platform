@@ -113,8 +113,12 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 from app.core.config import settings
 
-if TYPE_CHECKING:
-    from app.core.state import AgentState
+# NOTE: must be a real (non-TYPE_CHECKING) import - LangGraph resolves the
+# `state: "AgentState"` string annotation on the node function below via
+# typing.get_type_hints() at graph-build time, so AgentState must actually
+# be bound in this module's namespace at runtime, not only under
+# TYPE_CHECKING.
+from app.core.state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +201,7 @@ class ContextualEnricher:
         self.llm = ChatOpenAI(
             model=settings.router_model,   # gpt-4o-mini: cheap, fast, sufficient
             api_key=settings.openai_api_key,
+            base_url=settings.llm_base_url,
             temperature=0.0,               # deterministic: same chunk → same context
             max_tokens=120,                # 2-3 sentences is enough context
         )
@@ -236,7 +241,7 @@ class ContextualEnricher:
 
         if not chunks:
             logger.warning("enrich_chunks called with no chunks in state — skipping")
-            return {}
+            return None
 
         t0 = time.perf_counter()
 

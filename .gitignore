@@ -1,0 +1,28 @@
+# Secrets - NEVER commit real credentials
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes / local data (if ever created outside docker-compose volumes)
+qdrant_storage/
+neo4j_data/

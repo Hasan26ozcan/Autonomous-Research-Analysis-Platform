@@ -176,6 +176,7 @@ def direct_answer(state: AgentState) -> dict:
     llm = ChatOpenAI(
         model=settings.router_model,
         api_key=settings.openai_api_key,
+        base_url=settings.llm_base_url,
         temperature=0.1,
     )
 
@@ -229,7 +230,7 @@ def merge_results(state: AgentState) -> dict:
 
     Returns {} — LangGraph merges an empty dict without modifying state.
     """
-    return {}
+    return None
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -277,7 +278,18 @@ class ARAPOrchestrator:
         if self._checkpointer is None:
             try:
                 from langgraph.checkpoint.redis import RedisSaver
-                self._checkpointer = RedisSaver.from_conn_string(settings.redis_url)
+                # NOTE: RedisSaver.from_conn_string() is a @contextmanager - calling
+                # it directly (without `with ... as saver:`) returns a
+                # _GeneratorContextManager object, not an actual RedisSaver. That
+                # object doesn't implement the checkpointer interface (e.g. it has
+                # no get_next_version), which is why compiling the graph with it
+                # raised: "'_GeneratorContextManager' object has no attribute
+                # 'get_next_version'". Since this checkpointer needs to live for
+                # the whole lifetime of the app (not just a `with` block), we
+                # construct RedisSaver directly instead and call .setup() once to
+                # create its Redis search indices.
+                self._checkpointer = RedisSaver(redis_url=settings.redis_url)
+                self._checkpointer.setup()
                 logger.info("LangGraph Redis checkpointer initialized.")
             except Exception as e:
                 logger.warning(

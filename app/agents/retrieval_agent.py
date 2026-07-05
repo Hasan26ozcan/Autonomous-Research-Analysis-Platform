@@ -127,9 +127,12 @@ from app.core.config import settings
 from app.services.embedder import embedder
 from app.services.vector_store import vector_store
 from app.services.bm25_index import bm25_index
-
-if TYPE_CHECKING:
-    from app.core.state import AgentState
+# NOTE: must be a real (non-TYPE_CHECKING) import - see graph_agent.py note.
+# retrieve()/retrieve_multi() use `state: "AgentState"` as a runtime-resolved
+# string annotation (LangGraph calls typing.get_type_hints() on node
+# functions), so AgentState must actually be bound in this module's
+# namespace at runtime.
+from app.core.state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +215,7 @@ class RetrievalAgent:
         self.llm = ChatOpenAI(
             model=settings.router_model,
             api_key=settings.openai_api_key,
+            base_url=settings.llm_base_url,
             temperature=0.0,    # deterministic HyDE and decomposition
             max_tokens=300,     # 3-5 sentence HyDE passage fits in 300 tokens
         )

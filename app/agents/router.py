@@ -110,9 +110,11 @@ from tenacity import (
 
 from app.core.config import settings
 from app.core.state import QueryType
-
-if TYPE_CHECKING:
-    from app.core.state import AgentState
+# NOTE: must be a real (non-TYPE_CHECKING) import - see graph_agent.py note.
+# route()/get_route() use `state: "AgentState"` as a runtime-resolved string
+# annotation (LangGraph calls typing.get_type_hints() on node functions), so
+# AgentState must actually be bound in this module's namespace at runtime.
+from app.core.state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +265,7 @@ class RouterAgent:
         self.llm = ChatOpenAI(
             model=settings.router_model,
             api_key=settings.openai_api_key,
+            base_url=settings.llm_base_url,
             temperature=0.0,                              # fully deterministic routing
             response_format={"type": "json_object"},      # guaranteed valid JSON output
             max_tokens=200,                               # reason + type + confidence fits in 200

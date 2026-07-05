@@ -110,9 +110,14 @@ from tenacity import (
 )
 
 from app.core.config import settings
-
-if TYPE_CHECKING:
-    from app.core.state import AgentState
+# NOTE: AgentState must be a real (non-TYPE_CHECKING) import here. The
+# functions below use it as a string annotation (state: "AgentState") under
+# `from __future__ import annotations`, and LangGraph resolves those string
+# annotations at runtime via typing.get_type_hints() when building the state
+# graph. If AgentState only exists under `if TYPE_CHECKING:`, it is never
+# actually bound in this module's namespace at runtime, and that resolution
+# fails with: NameError: name 'AgentState' is not defined.
+from app.core.state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +317,7 @@ class KnowledgeGraphAgent:
         self.extraction_llm = ChatOpenAI(
             model=settings.router_model,
             api_key=settings.openai_api_key,
+            base_url=settings.llm_base_url,
             temperature=0.0,
             response_format={"type": "json_object"},
             max_tokens=600,    # up to 8 triples in JSON needs more room than routing
@@ -319,6 +325,7 @@ class KnowledgeGraphAgent:
         self.cypher_llm = ChatOpenAI(
             model=settings.router_model,
             api_key=settings.openai_api_key,
+            base_url=settings.llm_base_url,
             temperature=0.0,
             max_tokens=250,    # Cypher queries are short
             # NOTE: no response_format here — Cypher is not JSON, it's a query string

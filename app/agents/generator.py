@@ -115,9 +115,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from sentence_transformers import CrossEncoder
 
 from app.core.config import settings
-
-if TYPE_CHECKING:
-    from app.core.state import AgentState
+# NOTE: must be a real (non-TYPE_CHECKING) import - see graph_agent.py note.
+# generate()/judge()/should_retry() use `state: "AgentState"` as a
+# runtime-resolved string annotation (LangGraph calls typing.get_type_hints()
+# on node functions), so AgentState must actually be bound in this module's
+# namespace at runtime.
+from app.core.state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +207,7 @@ class AnswerGenerator:
         self.llm = ChatOpenAI(
             model=settings.llm_model,
             api_key=settings.openai_api_key,
+            base_url=settings.llm_base_url,
             temperature=settings.temperature,
             max_tokens=settings.max_tokens,
         )
@@ -607,15 +611,15 @@ class AnswerGenerator:
         # Skip conditions
         if not user_id or user_id == "anonymous":
             logger.debug("store_memory(): skipping for anonymous/empty user_id")
-            return {}
+            return None
 
         if not answer:
             logger.debug("store_memory(): skipping — empty answer")
-            return {}
+            return None
 
         if self.mem0 is None:
             logger.debug("store_memory(): Mem0 unavailable — skipping")
-            return {}
+            return None
 
         try:
             # Mem0 expects a list of message dicts in conversation format
@@ -632,7 +636,7 @@ class AnswerGenerator:
                 user_id, str(e)[:120],
             )
 
-        return {}   # no state fields modified
+        return None   # no state fields modified
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # Private: Context Window Assembly

@@ -38,6 +38,18 @@ class Settings(BaseSettings):
     #   judge_model  — cheap, for LLM-based fallback judging
     # Primary faithfulness judging uses LOCAL NLI (DeBERTa-v3) — no API cost.
     openai_api_key: str = Field(default="", description="OpenAI API key")
+    llm_base_url: str | None = Field(
+        default=None,
+        description=(
+            "Leave empty to use OpenAI directly (default). Set this to point "
+            "every ChatOpenAI() client in the codebase at any OpenAI-compatible "
+            "endpoint instead - e.g. a free provider like Groq "
+            "(https://api.groq.com/openai/v1) or a local Ollama server "
+            "(http://localhost:11434/v1) - without changing any code. "
+            "openai_api_key still gets sent as the bearer token, so it should "
+            "hold whatever key that provider expects."
+        ),
+    )
     llm_model: str = Field(default="gpt-4o", description="Primary generation model")
     router_model: str = Field(default="gpt-4o-mini", description="Fast model for routing/rewriting")
     judge_model: str = Field(default="gpt-4o-mini", description="Fallback LLM judge model")

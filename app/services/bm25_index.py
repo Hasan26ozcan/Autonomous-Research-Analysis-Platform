@@ -59,8 +59,12 @@ from typing import TYPE_CHECKING
 
 from app.core.config import settings
 
-if TYPE_CHECKING:
-    from app.core.state import AgentState
+# NOTE: must be a real (non-TYPE_CHECKING) import - LangGraph resolves the
+# `state: "AgentState"` string annotation on the node function below via
+# typing.get_type_hints() at graph-build time, so AgentState must actually
+# be bound in this module's namespace at runtime, not only under
+# TYPE_CHECKING.
+from app.core.state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -390,9 +394,9 @@ def index_chunks(state: "AgentState") -> dict:
 
     if not chunks:
         logger.warning("index_chunks: no chunks in state")
-        return {}
+        return None
 
     bm25_index.add_chunks(chunks)
     logger.info("BM25: indexed %d chunks. Total corpus size: %d", len(chunks), bm25_index.size)
 
-    return {}
+    return None
