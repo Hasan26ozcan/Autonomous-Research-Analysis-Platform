@@ -197,9 +197,23 @@ class VectorStore:
         from qdrant_client.models import PointStruct
 
         # Build PointStruct list — each point has an ID, vector, and payload
+        #
+        # NOTE: point IDs are DETERMINISTIC (uuid5, derived from doc_id +
+        # chunk_index) rather than random uuid4. With random IDs, re-ingesting
+        # the same PDF (e.g. during testing, or a user re-uploading the same
+        # file) created brand new points every time with no deduplication -
+        # the collection grew unbounded with duplicate chunks, which then
+        # polluted retrieval results (the same passage showing up multiple
+        # times in /query's top-k, crowding out genuinely different content).
+        # A deterministic ID makes re-ingesting the same doc_id/chunk_index
+        # an idempotent upsert: it overwrites the existing point instead of
+        # adding a duplicate.
         points = [
             PointStruct(
-                id=str(uuid.uuid4()),   # unique UUID per chunk
+                id=str(uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"{chunk.get('doc_id', '')}:{chunk.get('chunk_index', i)}",
+                )),
                 vector=embedding,
                 payload={
                     "text":        chunk["text"],

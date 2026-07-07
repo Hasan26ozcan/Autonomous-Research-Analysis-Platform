@@ -299,7 +299,7 @@ class RouterAgent:
                     base_url = settings.mem0_base_url
                     if "localhost" in base_url and settings.qdrant_host in {"qdrant", "neo4j", "redis"}:
                         base_url = base_url.replace("localhost", "host.docker.internal")
-                    self._mem0_client = MemoryClient(base_url=base_url)
+                    self._mem0_client = MemoryClient(host=base_url)
                 logger.info("Mem0 client initialized.")
             except Exception as e:
                 logger.warning(
@@ -441,6 +441,10 @@ class RouterAgent:
         After 3 attempts (1s → 2s → 4s backoff), the exception propagates
         to _classify() which catches it and returns the safe fallback.
         """
+        from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+        groq_rate_limiter.acquire(estimate_tokens(
+            ROUTER_SYSTEM_PROMPT, question, max_output_tokens=200,
+        ))
         response = self.llm.invoke([
             SystemMessage(content=ROUTER_SYSTEM_PROMPT),
             HumanMessage(content=ROUTER_USER_TEMPLATE.format(question=question)),

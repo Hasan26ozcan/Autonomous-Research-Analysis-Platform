@@ -265,7 +265,7 @@ class AnswerGenerator:
                     base_url = settings.mem0_base_url
                     if "localhost" in base_url and settings.qdrant_host in {"qdrant", "neo4j", "redis"}:
                         base_url = base_url.replace("localhost", "host.docker.internal")
-                    self._mem0_client = MemoryClient(base_url=base_url)
+                    self._mem0_client = MemoryClient(host=base_url)
                 logger.info("Generator: Mem0 client initialized for store_memory.")
             except Exception as e:
                 logger.warning(

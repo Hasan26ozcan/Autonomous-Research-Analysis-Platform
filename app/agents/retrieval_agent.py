@@ -381,7 +381,14 @@ class RetrievalAgent:
         # value = best chunk dict seen so far for this key
         candidate_pool: dict[tuple, dict] = {}
 
-        for sub_q in sub_questions:
+        for i, sub_q in enumerate(sub_questions):
+            # Proactive pacing - same technique as ingestion's chunk loops
+            # (see contextual_enricher.enrich()). Each sub-question triggers
+            # an LLM call (_hyde_rewrite), so multi-hop queries with several
+            # sub-questions can burst-fire calls just like chunk loops do.
+            if i > 0 and settings.llm_call_min_interval_seconds > 0:
+                time.sleep(settings.llm_call_min_interval_seconds)
+
             hyde_passage = self._hyde_rewrite(sub_q)
             sub_chunks = self._full_retrieval_pipeline(
                 query_text=hyde_passage,

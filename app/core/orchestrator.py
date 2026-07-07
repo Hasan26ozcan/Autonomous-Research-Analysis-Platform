@@ -495,11 +495,22 @@ class ARAPOrchestrator:
             init_state,
         )
 
-        return {
+        result = {
             "doc_id":      final_state.get("doc_id"),
             "chunk_count": final_state.get("chunk_count", 0),
             "kg_triples":  len(final_state.get("kg_entities") or []),
         }
+
+        # Best-effort audit log - never blocks or fails the response.
+        from app.services.postgres_store import record_document
+        await record_document(
+            doc_id=result["doc_id"],
+            filename=filename,
+            chunk_count=result["chunk_count"],
+            kg_triples=result["kg_triples"],
+        )
+
+        return result
 
     async def query(
         self,
@@ -555,13 +566,30 @@ class ARAPOrchestrator:
             config,
         )
 
-        return {
+        result = {
             "answer":             final_state.get("answer", ""),
             "sources":            final_state.get("sources") or [],
             "query_type":         final_state.get("query_type"),
             "faithfulness_score": final_state.get("faithfulness_score"),
             "latency_ms":         final_state.get("latency_ms") or {},
         }
+
+        # Best-effort audit log - never blocks or fails the response.
+        from app.services.postgres_store import record_query
+        await record_query(
+            session_id=session_id,
+            user_id=user_id,
+            doc_id=doc_id,
+            question=question,
+            answer=result["answer"],
+            query_type=result["query_type"],
+            faithfulness_score=result["faithfulness_score"],
+            retrieval_score=final_state.get("retrieval_score"),
+            retry_count=final_state.get("retry_count") or 0,
+            latency_ms=result["latency_ms"],
+        )
+
+        return result
 
     async def stream_query(
         self,

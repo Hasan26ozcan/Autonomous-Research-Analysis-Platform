@@ -396,6 +396,17 @@ def index_chunks(state: "AgentState") -> dict:
         logger.warning("index_chunks: no chunks in state")
         return None
 
+    # Remove any existing entries for this doc_id first. Without this,
+    # re-ingesting the same document (e.g. re-uploading during testing)
+    # appended a second copy of every chunk to the corpus instead of
+    # replacing the old one - remove_by_doc() already existed for exactly
+    # this purpose but was never actually called here.
+    doc_id = chunks[0].get("doc_id", "") if chunks else ""
+    if doc_id:
+        removed = bm25_index.remove_by_doc(doc_id)
+        if removed:
+            logger.info("BM25: removed %d stale chunks for doc_id=%s before re-indexing", removed, doc_id)
+
     bm25_index.add_chunks(chunks)
     logger.info("BM25: indexed %d chunks. Total corpus size: %d", len(chunks), bm25_index.size)
 
