@@ -280,27 +280,68 @@ class RouterAgent:
         Lazy Mem0 client initialization.
 
         Why lazy?
-          The Mem0 client makes a connection on instantiation. If Mem0 is
-          not running yet (e.g. docker compose startup race condition),
-          eager init would crash the entire API on boot.
+          Mem0 makes a connection on instantiation. If Qdrant is not running
+          yet (e.g. docker compose startup race condition), eager init would
+          crash the entire API on boot.
 
-        Cloud vs self-hosted:
-          If settings.mem0_api_key is set → connects to Mem0 cloud.
-          If settings.mem0_api_key is empty → connects to self-hosted
-          Mem0 server at settings.mem0_base_url.
-          The client API is identical either way.
+        Embedded (self-hosted library) mode - no external Mem0 account,
+        API key, or separate Mem0 server required:
+          - vector_store: the SAME Qdrant instance already running for
+            document retrieval (settings.qdrant_host/port), just a
+            different collection (settings.mem0_collection_name) so
+            memories never mix with document chunks.
+          - embedder: the SAME local sentence-transformers model already
+            used for document embeddings (settings.embedding_model) - runs
+            on CPU, no API call, no extra cost.
+          - llm: whatever OpenAI-compatible endpoint the rest of the app
+            already uses (settings.openai_api_key / settings.llm_base_url -
+            e.g. Groq), used only to extract memorable facts from each
+            conversation turn. Every Memory.add() call spends a small
+            amount of that provider's token budget, since it's an actual
+            LLM call - worth knowing if you're on a rate-limited free tier.
+
+        If settings.mem0_api_key IS set, we instead use the hosted Mem0
+        Platform (MemoryClient) - useful if you'd rather not run this
+        locally.
         """
         if self._mem0_client is None:
             try:
-                from mem0 import MemoryClient
                 if settings.mem0_api_key:
+                    from mem0 import MemoryClient
                     self._mem0_client = MemoryClient(api_key=settings.mem0_api_key)
+                    logger.info("Mem0 client initialized (hosted Mem0 Platform).")
                 else:
-                    base_url = settings.mem0_base_url
-                    if "localhost" in base_url and settings.qdrant_host in {"qdrant", "neo4j", "redis"}:
-                        base_url = base_url.replace("localhost", "host.docker.internal")
-                    self._mem0_client = MemoryClient(host=base_url)
-                logger.info("Mem0 client initialized.")
+                    from mem0 import Memory
+                    config = {
+                        "vector_store": {
+                            "provider": "qdrant",
+                            "config": {
+                                "collection_name": settings.mem0_collection_name,
+                                "host": settings.qdrant_host,
+                                "port": settings.qdrant_port,
+                                "embedding_model_dims": settings.embedding_dim,
+                            },
+                        },
+                        "embedder": {
+                            "provider": "huggingface",
+                            "config": {"model": settings.embedding_model},
+                        },
+                        "llm": {
+                            "provider": "openai",
+                            "config": {
+                                "model": settings.router_model,
+                                "api_key": settings.openai_api_key,
+                                "openai_base_url": settings.llm_base_url,
+                            },
+                        },
+                    }
+                    self._mem0_client = Memory.from_config(config)
+                    logger.info(
+                        "Mem0 initialized (embedded - Qdrant collection=%s, "
+                        "local embedder, LLM via %s).",
+                        settings.mem0_collection_name,
+                        settings.llm_base_url or "OpenAI default",
+                    )
             except Exception as e:
                 logger.warning(
                     "Mem0 client init failed (long-term memory disabled): %s", e

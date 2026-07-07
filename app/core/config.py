@@ -91,6 +91,14 @@ class Settings(BaseSettings):
     # Default: MiniLM-L6-v2 (384 dims, CPU-friendly, fast)
     # SOTA 2026: Qwen/Qwen3-Embedding-4B (2560 dims, GPU required, top MTEB)
     embedding_model: str = Field(default="sentence-transformers/all-MiniLM-L6-v2")
+    mem0_collection_name: str = Field(
+        default="arap_memories",
+        description=(
+            "Qdrant collection used by Mem0 for long-term memory storage - "
+            "kept separate from qdrant_collection (which holds document "
+            "chunks) so the two don't mix."
+        ),
+    )
     embedding_dim: int = Field(default=384, description="MUST match embedding_model output dim")
 
     # ── Chunking ──────────────────────────────────────────────────────────────

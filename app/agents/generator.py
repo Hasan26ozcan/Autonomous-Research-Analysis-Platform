@@ -252,21 +252,49 @@ class AnswerGenerator:
         """
         Lazy Mem0 client, consistent with Phase 4 (RouterAgent.mem0).
 
-        Same dual-mode: cloud (api_key set) vs self-hosted (base_url only).
-        store_memory() is a best-effort operation — if Mem0 is unavailable,
+        Embedded mode (default, no Mem0 account needed): points at the
+        already-running Qdrant (separate collection) + local
+        sentence-transformers embedder + whatever OpenAI-compatible LLM
+        endpoint the app is already configured with (e.g. Groq). See
+        RouterAgent.mem0 for the full rationale - kept identical here so
+        both agents share one consistent memory store.
+
+        store_memory() is a best-effort operation - if Mem0 is unavailable,
         the query still completes and the answer is still returned.
         """
         if self._mem0_client is None:
             try:
-                from mem0 import MemoryClient
                 if settings.mem0_api_key:
+                    from mem0 import MemoryClient
                     self._mem0_client = MemoryClient(api_key=settings.mem0_api_key)
+                    logger.info("Generator: Mem0 client initialized (hosted Mem0 Platform).")
                 else:
-                    base_url = settings.mem0_base_url
-                    if "localhost" in base_url and settings.qdrant_host in {"qdrant", "neo4j", "redis"}:
-                        base_url = base_url.replace("localhost", "host.docker.internal")
-                    self._mem0_client = MemoryClient(host=base_url)
-                logger.info("Generator: Mem0 client initialized for store_memory.")
+                    from mem0 import Memory
+                    config = {
+                        "vector_store": {
+                            "provider": "qdrant",
+                            "config": {
+                                "collection_name": settings.mem0_collection_name,
+                                "host": settings.qdrant_host,
+                                "port": settings.qdrant_port,
+                                "embedding_model_dims": settings.embedding_dim,
+                            },
+                        },
+                        "embedder": {
+                            "provider": "huggingface",
+                            "config": {"model": settings.embedding_model},
+                        },
+                        "llm": {
+                            "provider": "openai",
+                            "config": {
+                                "model": settings.router_model,
+                                "api_key": settings.openai_api_key,
+                                "openai_base_url": settings.llm_base_url,
+                            },
+                        },
+                    }
+                    self._mem0_client = Memory.from_config(config)
+                    logger.info("Generator: Mem0 initialized (embedded) for store_memory.")
             except Exception as e:
                 logger.warning(
                     "Generator: Mem0 client init failed (memory storage disabled): %s", e
