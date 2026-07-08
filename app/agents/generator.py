@@ -357,6 +357,10 @@ class AnswerGenerator:
             )
 
         # LLM call — this is the primary cost center in the pipeline
+        from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+        groq_rate_limiter.acquire(estimate_tokens(
+            system_prompt, user_prompt, max_output_tokens=settings.max_tokens,
+        ))
         response = self.llm.invoke([
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt),

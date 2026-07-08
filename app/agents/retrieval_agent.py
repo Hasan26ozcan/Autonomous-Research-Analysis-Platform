@@ -471,6 +471,10 @@ class RetrievalAgent:
             3-5 sentence hypothetical answer passage, or original question on error.
         """
         try:
+            from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+            groq_rate_limiter.acquire(estimate_tokens(
+                HYDE_SYSTEM_PROMPT, question, max_output_tokens=250,
+            ))
             response = self.llm.invoke([
                 SystemMessage(content=HYDE_SYSTEM_PROMPT),
                 HumanMessage(content=f"Question: {question}"),
@@ -509,6 +513,10 @@ class RetrievalAgent:
             Always returns at least [question] (never empty list).
         """
         try:
+            from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+            groq_rate_limiter.acquire(estimate_tokens(
+                DECOMPOSE_SYSTEM_PROMPT, question, max_output_tokens=200,
+            ))
             response = self.llm.invoke([
                 SystemMessage(content=DECOMPOSE_SYSTEM_PROMPT),
                 HumanMessage(content=f"Question to decompose: {question}"),

@@ -38,6 +38,7 @@ services:
         condition: service_healthy
     volumes:
       - ./:/app
+      - hf_cache:/root/.cache/huggingface
     restart: unless-stopped
     command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload
 
@@ -73,6 +74,7 @@ services:
         condition: service_healthy
     volumes:
       - ./:/app
+      - hf_cache:/root/.cache/huggingface
     command: celery -A app.services.tasks worker --loglevel=info --concurrency=2
     restart: unless-stopped
 
@@ -163,3 +165,4 @@ volumes:
   neo4j_logs:
   redis_data:
   postgres_data:
+  hf_cache:

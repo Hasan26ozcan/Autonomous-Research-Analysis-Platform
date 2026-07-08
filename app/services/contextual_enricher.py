@@ -419,6 +419,10 @@ class ContextualEnricher:
             chunk_text=truncated_chunk,
         )
 
+        from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+        groq_rate_limiter.acquire(estimate_tokens(
+            CONTEXT_SYSTEM_PROMPT, user_message, max_output_tokens=150,
+        ))
         response = self.llm.invoke([
             SystemMessage(content=CONTEXT_SYSTEM_PROMPT),
             HumanMessage(content=user_message),

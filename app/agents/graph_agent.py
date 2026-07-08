@@ -322,7 +322,9 @@ class KnowledgeGraphAgent:
         # schema and is documented as far more reliable for structured
         # extraction: https://console.groq.com/docs/structured-outputs
         self.extraction_llm = ChatOpenAI(
-            model=settings.router_model,
+            model=settings.llm_model,   # bigger model than router_model - small
+            # models are noticeably less reliable at strict JSON schema
+            # compliance, which was a large share of the remaining 400s.
             api_key=settings.openai_api_key,
             base_url=settings.llm_base_url,
             temperature=0.0,
@@ -354,7 +356,9 @@ class KnowledgeGraphAgent:
                     },
                 },
             },
-            max_tokens=1200,   # up to 8 triples in JSON needs more room than routing
+            max_tokens=2000,   # bumped from 1200 - saw LengthFinishReasonError
+            # with completion_tokens=1200 hitting the old limit exactly on
+            # some chunks, truncating valid JSON mid-way.
             # NOTE: reasoning_effort was tried here to reduce hidden "thinking"
             # tokens on Groq's reasoning models, but combining it with strict
             # json_schema mode caused a client-side TypeError instead of the
@@ -578,8 +582,10 @@ class KnowledgeGraphAgent:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     @retry(
-        stop=stop_after_attempt(2),
-        wait=wait_exponential(multiplier=1, min=1, max=4),
+        stop=stop_after_attempt(4),   # was 2 - JSON-validation 400s are often
+        # transient (model got unlucky on that generation), more attempts
+        # meaningfully reduces how often a chunk ends up with zero triples.
+        wait=wait_exponential(multiplier=1, min=1, max=6),
         retry=retry_if_exception_type(Exception),
         reraise=False,   # caller handles None/failure gracefully
     )
@@ -590,6 +596,10 @@ class KnowledgeGraphAgent:
         the model's effective attention range for accurate extraction.
         """
         truncated = " ".join(text.split()[:1500])
+        from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+        groq_rate_limiter.acquire(estimate_tokens(
+            TRIPLE_EXTRACTION_SYSTEM, truncated, max_output_tokens=2000,
+        ))
         response = self.extraction_llm.invoke([
             SystemMessage(content=TRIPLE_EXTRACTION_SYSTEM),
             HumanMessage(content=f"Text:\n{truncated}"),
@@ -761,6 +771,10 @@ class KnowledgeGraphAgent:
             List of entity name strings, e.g. ["FloodNet", "MIT", "ERA5"].
         """
         try:
+            from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+            groq_rate_limiter.acquire(estimate_tokens(
+                QUERY_ENTITY_EXTRACTION_SYSTEM, question, max_output_tokens=150,
+            ))
             response = self.extraction_llm.invoke([
                 SystemMessage(content=QUERY_ENTITY_EXTRACTION_SYSTEM),
                 HumanMessage(content=f"Question: {question}"),
@@ -803,6 +817,10 @@ class KnowledgeGraphAgent:
         )
 
         try:
+            from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+            groq_rate_limiter.acquire(estimate_tokens(
+                CYPHER_GENERATION_SYSTEM, user_prompt, max_output_tokens=300,
+            ))
             response = self.cypher_llm.invoke([
                 SystemMessage(content=CYPHER_GENERATION_SYSTEM),
                 HumanMessage(content=user_prompt),
