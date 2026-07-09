@@ -79,7 +79,22 @@ class SlidingWindowRateLimiter:
                 tokens_in_window = sum(t for _, t in self._token_events)
 
                 rpm_ok = requests_in_window < self.max_rpm
-                tpm_ok = tokens_in_window + estimated_tokens <= self.max_tpm
+
+                if estimated_tokens >= self.max_tpm:
+                    # This single call's own token estimate already meets or
+                    # exceeds the whole per-minute budget - the strict check
+                    # below (tokens_in_window + estimated_tokens <= max_tpm)
+                    # could NEVER be true in this case, even against a
+                    # completely empty window, causing acquire() to sleep
+                    # forever (a real hang observed with generate(): 5
+                    # retrieved chunks + max_output_tokens routinely adds up
+                    # to more than the 5000 TPM default). Best effort
+                    # instead: let it through once the window has fully
+                    # drained of other traffic, rather than blocking forever
+                    # on an unsatisfiable condition.
+                    tpm_ok = tokens_in_window == 0
+                else:
+                    tpm_ok = tokens_in_window + estimated_tokens <= self.max_tpm
 
                 if rpm_ok and tpm_ok:
                     self._request_times.append(now)

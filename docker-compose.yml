@@ -4,6 +4,10 @@ services:
   api:
     build: .
     container_name: arap-api
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
     ports:
       - "8000:8000"
     environment:
