@@ -203,7 +203,14 @@ class ContextualEnricher:
             api_key=settings.openai_api_key,
             base_url=settings.llm_base_url,
             temperature=0.0,               # deterministic: same chunk → same context
-            max_tokens=120,                # 2-3 sentences is enough context
+            max_tokens=400,                # was 120 - too low for reasoning models
+            # (e.g. Groq's openai/gpt-oss-20b): they spend part of the token
+            # budget on hidden "thinking" tokens before writing the visible
+            # answer. With max_tokens=120, that reasoning could consume the
+            # ENTIRE budget, leaving response.content empty ("") with no
+            # error raised (unlike the strict-JSON path in graph_agent.py,
+            # there's no schema validation here to catch it) - this is why
+            # every chunk's context showed up as "[Context: ]" (empty).
         )
         self._cache: dict[tuple[str, int], str] = {}
 
@@ -339,6 +346,16 @@ class ContextualEnricher:
                 page=chunk.get("page", 1),
                 doc_anchor=doc_anchor,
             )
+            if not context_text:
+                # Defensive fallback: an empty (but non-exception) response
+                # would otherwise silently produce "[Context: ]\n\n<text>" -
+                # a useless artifact that's worse than no context at all.
+                # Treat it the same as a failure: use the chunk unchanged.
+                logger.warning(
+                    "Context generation returned empty text for doc_id=%s "
+                    "chunk_index=%d (using original text)", doc_id, chunk_index,
+                )
+                return {**chunk, "context_prepended": False, "original_text": chunk["text"]}
             self._cache[cache_key] = context_text
             return self._apply_context(chunk, context_text)
 
