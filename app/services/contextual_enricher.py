@@ -72,33 +72,17 @@ document context — dramatically improving retrieval quality.
 COST MANAGEMENT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 One LLM call per chunk. For a 100-page document (~200 chunks) using
-gpt-4o-mini at $0.15/1M input tokens, enrichment costs approximately $0.02.
+llama-3.1-70b (via Groq free tier at ~6000 tokens/min), costs are minimal.
+If using OpenAI, gpt-4o-mini at $0.15/1M input tokens, enrichment costs
+approximately $0.02.
 
 Optimizations implemented:
   1. Batch processing: groups chunks into document-level batches to reuse
      the document anchor across calls (avoids re-passing it each time)
-  2. max_tokens=120: context descriptions are kept to 2-3 sentences
+  2. max_tokens=512: context descriptions are kept to 2-3 sentences
   3. temperature=0.0: deterministic output (no creativity needed here)
   4. Graceful degradation: if any LLM call fails, the original chunk text
      is used unchanged. Enrichment failure never blocks ingestion.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-STATE INTEGRATION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Reads from AgentState:
-    chunks (list[dict])  — raw chunks from chunk_document node
-                           each chunk has: text, page, filename, doc_id,
-                           chunk_index, word_count, context_prepended=False
-
-Writes to AgentState (partial update):
-    chunks (list[dict])  — same list, same length, same order
-                           BUT each chunk now has:
-                             text = "[Context: ...]\n\n<original text>"
-                             context_prepended = True
-                             original_text = <original text before enrichment>
-
-The "chunks" key is OVERWRITTEN (not appended). LangGraph handles this
-correctly because the update dict replaces the key entirely.
 """
 
 from __future__ import annotations
@@ -187,10 +171,15 @@ class ContextualEnricher:
       4. Be easily testable (LLM call is isolated in _generate_context())
 
     Attributes:
-        llm:            ChatOpenAI instance using router_model (gpt-4o-mini).
-                        router_model is used — not llm_model — because context
-                        generation is a structured task, not free-form reasoning.
-                        Using the cheaper model cuts enrichment cost by ~10x.
+        llm:            ChatOpenAI instance using llama-3.1-70b-versatile (via Groq).
+                        This model is specifically chosen because:
+                          - It's NOT a reasoning model (no hidden "thinking" tokens)
+                          - It perfectly supports `response_format={"type": "json_object"}`
+                          - It's extremely fast and free on Groq's tier
+                          - It outputs valid JSON without consuming the token budget
+                        Using this model guarantees that `max_tokens=512` is used
+                        entirely for the visible output (context text), not wasted
+                        on invisible reasoning chains.
         _cache:         Dict mapping (doc_id, chunk_index) → context string.
                         Prevents re-generating context if the same document is
                         re-ingested (e.g. after a failed attempt). Cache is
@@ -198,19 +187,18 @@ class ContextualEnricher:
     """
 
     def __init__(self):
+        # CRITICAL FIX 1: Model explicitly set to Groq's best non-reasoning model.
+        # Previously, settings.router_model (gpt-4o-mini) was used, but this model
+        # is not available on Groq and would default to returning errors or empty responses.
         self.llm = ChatOpenAI(
-            model=settings.router_model,   # gpt-4o-mini: cheap, fast, sufficient
+            model="llama-3.1-70b-versatile",  # Works on Groq, NOT a reasoning model
             api_key=settings.openai_api_key,
             base_url=settings.llm_base_url,
-            temperature=0.0,               # deterministic: same chunk → same context
-            max_tokens=400,                # was 120 - too low for reasoning models
-            # (e.g. Groq's openai/gpt-oss-20b): they spend part of the token
-            # budget on hidden "thinking" tokens before writing the visible
-            # answer. With max_tokens=120, that reasoning could consume the
-            # ENTIRE budget, leaving response.content empty ("") with no
-            # error raised (unlike the strict-JSON path in graph_agent.py,
-            # there's no schema validation here to catch it) - this is why
-            # every chunk's context showed up as "[Context: ]" (empty).
+            temperature=0.0,                 # deterministic: same chunk → same context
+            # CRITICAL FIX 2: max_tokens increased from 400 to 512.
+            # Since this is NOT a reasoning model, all 512 tokens go to the visible output,
+            # which definitively prevents empty responses like "[Context: ]".
+            max_tokens=512,
         )
         self._cache: dict[tuple[str, int], str] = {}
 
@@ -413,7 +401,7 @@ class ContextualEnricher:
         Output from LLM:
           - 2-3 sentence context description
           - Stripped of leading/trailing whitespace
-          - Maximum ~120 tokens (enforced by max_tokens parameter)
+          - Maximum ~512 tokens (enforced by max_tokens parameter)
 
         Args:
             chunk_text:  The raw chunk text (truncated to 600 words internally)
@@ -437,8 +425,9 @@ class ContextualEnricher:
         )
 
         from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+        # max_output_tokens estimation updated (150 → 512)
         groq_rate_limiter.acquire(estimate_tokens(
-            CONTEXT_SYSTEM_PROMPT, user_message, max_output_tokens=150,
+            CONTEXT_SYSTEM_PROMPT, user_message, max_output_tokens=512,
         ))
         response = self.llm.invoke([
             SystemMessage(content=CONTEXT_SYSTEM_PROMPT),

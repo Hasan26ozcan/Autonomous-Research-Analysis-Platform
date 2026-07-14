@@ -50,6 +50,8 @@ services:
   worker:
     build: .
     container_name: arap-worker
+    # ✅ Remove root privileges (fixes security warning)
+    user: "1000:1000"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - LLM_BASE_URL=${LLM_BASE_URL:-}
@@ -79,7 +81,8 @@ services:
     volumes:
       - ./:/app
       - hf_cache:/root/.cache/huggingface
-    command: celery -A app.services.tasks worker --loglevel=info --concurrency=2
+    # ✅ Start via app.core.celery_app (not app/services/tasks)
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2
     restart: unless-stopped
 
   # ── Qdrant Vector Database ──────────────────────────────────────────────────
@@ -92,13 +95,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      # Qdrant's image deliberately ships without curl/wget (a security
-      # decision by the Qdrant team - see github.com/qdrant/qdrant/issues/4250
-      # and #3491), so a wget/curl-based healthcheck can never succeed here -
-      # it always reports "unhealthy" regardless of whether Qdrant is
-      # actually up. bash IS present in this image, so we use its built-in
-      # /dev/tcp redirection to just check the port is open - no external
-      # binary required.
+      # Qdrant image does not have curl/wget, so we check the port using /dev/tcp.
       test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' || exit 1"]
       interval: 10s
       timeout: 5s
@@ -127,15 +124,17 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # ── Redis (session state + Celery broker) ───────────────────────────────────
+  # ── Redis Stack (session state + Celery broker + RediSearch) ──────────────
   redis:
-    image: redis:7.4-alpine
+    # ✅ Redis Stack image: includes the RediSearch module (required for checkpointer)
+    image: redis/redis-stack:latest
     container_name: arap-redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --save 60 1 --appendonly yes
+    # Redis Stack enables AOF by default; no extra config needed.
+    # You can add extra parameters if needed, but it's not required.
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -161,6 +160,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    # ✅ 30-second graceful shutdown period
+    stop_grace_period: 30s
     restart: unless-stopped
 
 volumes:

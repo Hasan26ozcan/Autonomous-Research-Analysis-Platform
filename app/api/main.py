@@ -12,9 +12,13 @@ ENDPOINTS
     Used by Docker health checks and monitoring dashboards.
 
   POST /ingest
-    Upload a PDF → triggers full ingest pipeline (Phase 2-3-6).
-    Returns doc_id, chunk_count, kg_triples.
+    Upload a PDF → triggers full ingest pipeline (Phase 2-3-6) **asynchronously**.
+    Returns task_id immediately. Use /ingest/status/{task_id} to track progress.
     Max file size: 50 MB. Only .pdf extension accepted.
+
+  GET  /ingest/status/{task_id}
+    Query the status of an ongoing ingest task.
+    Returns PENDING, STARTED, SUCCESS, or FAILURE with details.
 
   POST /query
     Synchronous question answering via adaptive RAG pipeline (Phase 4-7).
@@ -33,7 +37,8 @@ ENDPOINTS
 REQUEST / RESPONSE SCHEMAS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  IngestResponse      — doc_id, filename, chunk_count, kg_triples, message
+  IngestResponse      — task_id, status, message
+  IngestStatusResponse — task_id, status, result (if done), error (if failed)
   QueryRequest        — question, session_id, user_id, doc_id, top_k
   QueryResponse       — answer, sources, query_type, faithfulness_score,
                         session_id, latency_ms
@@ -76,9 +81,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from celery.result import AsyncResult
 
 from app.core.config import settings
 from app.core.orchestrator import orchestrator
+from app.services.tasks import ingest_document_task
+from app.core.celery_app import celery_app
 
 logging.basicConfig(
     level=logging.INFO,
@@ -164,11 +172,16 @@ app.add_middleware(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class IngestResponse(BaseModel):
-    doc_id: str
-    filename: str
-    chunk_count: int
-    kg_triples: int
-    message: str
+    task_id: str
+    status: str = "queued"
+    message: str = "Document ingestion started. Use /ingest/status/{task_id} to track progress."
+
+
+class IngestStatusResponse(BaseModel):
+    task_id: str
+    status: str  # PENDING, STARTED, SUCCESS, FAILURE
+    result: dict | None = None
+    error: str | None = None
 
 
 class QueryRequest(BaseModel):
@@ -263,21 +276,19 @@ async def health():
 
 
 @app.post("/ingest", response_model=IngestResponse, tags=["Documents"])
-async def ingest_document(file: UploadFile = File(...)):
+async def ingest_document(file: UploadFile = File(...), user_id: str = "default"):
     """
-    Upload a PDF and process it through the full ingestion pipeline.
+    Upload a PDF and process it through the full ingestion pipeline **asynchronously**.
 
-    Pipeline (Phases 2, 3, 6):
-      1. chunk_document        — PDF → overlapping text chunks
-      2. enrich_chunks         — prepend LLM context to each chunk
-      3. embed_chunks          — dense vectors via sentence-transformers
-      4. store_chunks          — upsert to Qdrant HNSW index
-      5. index_chunks          — add to BM25 in-memory corpus
-      6. extract_and_store_node — entity/relation triples → Neo4j
+    Pipeline runs in a Celery worker (non-blocking):
+      1. chunk_document            — PDF → overlapping text chunks
+      2. enrich_chunks             — prepend LLM context to each chunk
+      3. embed_chunks              — dense vectors via sentence-transformers
+      4. store_chunks              — upsert to Qdrant HNSW index
+      5. index_chunks              — add to BM25 in-memory corpus
+      6. extract_and_store_node    — entity/relation triples → Neo4j
 
-    Returns immediately with doc_id and counts. The ingestion itself
-    runs synchronously in a thread pool (blocking calls in async context
-    are handled via asyncio.to_thread in orchestrator.ingest()).
+    Returns immediately with a task_id. Use /ingest/status/{task_id} to check progress.
 
     Validation:
       - Only .pdf files accepted (extension check)
@@ -303,25 +314,49 @@ async def ingest_document(file: UploadFile = File(...)):
                    f"Received: {len(contents) / 1024 / 1024:.1f} MB.",
         )
 
-    try:
-        result = await orchestrator.ingest(contents, filename=filename)
-        logger.info(
-            "Ingested '%s': doc_id=%s, chunks=%d, kg_triples=%d",
-            filename, result.get("doc_id"), result.get("chunk_count"), result.get("kg_triples"),
-        )
-        return IngestResponse(
-            doc_id=result["doc_id"] or "",
-            filename=filename,
-            chunk_count=result.get("chunk_count", 0),
-            kg_triples=result.get("kg_triples", 0),
-            message="Document ingested successfully.",
-        )
-    except Exception as e:
-        logger.exception("Ingest failed for '%s': %s", filename, e)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Ingestion failed: {str(e)[:200]}",
-        )
+    # Send task to Celery worker
+    task = ingest_document_task.delay(
+        file_content=contents,
+        filename=filename,
+        user_id=user_id
+    )
+
+    logger.info("Ingest task queued: task_id=%s, filename=%s", task.id, filename)
+
+    return IngestResponse(
+        task_id=task.id,
+        status="queued",
+        message="Document ingestion started. Use /ingest/status/{task_id} to track progress."
+    )
+
+
+@app.get("/ingest/status/{task_id}", response_model=IngestStatusResponse, tags=["Documents"])
+async def get_ingest_status(task_id: str):
+    """
+    Get the status of an ingest task.
+
+    Possible statuses:
+      - PENDING   : waiting for a worker
+      - STARTED   : worker started processing
+      - SUCCESS   : completed successfully (result contains doc_id, chunk_count, kg_triples)
+      - FAILURE   : failed (error field contains exception message)
+    """
+    task_result = AsyncResult(task_id, app=celery_app)
+    
+    response = {
+        "task_id": task_id,
+        "status": task_result.status,
+    }
+
+    if task_result.status == "SUCCESS":
+        response["result"] = task_result.result
+    elif task_result.status == "FAILURE":
+        response["error"] = str(task_result.info)
+    elif task_result.status in ("PENDING", "STARTED"):
+        # No additional info yet
+        pass
+
+    return IngestStatusResponse(**response)
 
 
 @app.post("/query", response_model=QueryResponse, tags=["Query"])
