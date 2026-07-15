@@ -95,6 +95,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import TYPE_CHECKING
 
@@ -110,11 +111,8 @@ from tenacity import (
 
 from app.core.config import settings
 from app.core.state import QueryType
-# NOTE: must be a real (non-TYPE_CHECKING) import - see graph_agent.py note.
-# route()/get_route() use `state: "AgentState"` as a runtime-resolved string
-# annotation (LangGraph calls typing.get_type_hints() on node functions), so
-# AgentState must actually be bound in this module's namespace at runtime.
 from app.core.state import AgentState
+from app.services.embedder import embedder   # <-- NEW: singleton embedder
 
 logger = logging.getLogger(__name__)
 
@@ -125,9 +123,9 @@ logger = logging.getLogger(__name__)
 # Prompt engineering decisions:
 #   1. The four categories are defined WITH examples — not just named.
 #      Examples dramatically improve classification accuracy for edge cases.
-#   2. We force JSON output (response_format={"type": "json_object"}) to
-#      guarantee parseable structured output without asking the model to
-#      "wrap in ```json```" — that approach is fragile.
+#   2. We force JSON output via explicit instruction (since Groq doesn't
+#      support response_format=json_object). The prompt clearly states
+#      "Return ONLY a valid JSON object" and specifies the exact schema.
 #   3. "reason" field forces the model to articulate its reasoning before
 #      committing to a type — a chain-of-thought approach within JSON.
 #   4. We do NOT include the document content in the routing prompt.
@@ -183,14 +181,18 @@ graph (knowledge graph traversal)
 
 ━━━ OUTPUT FORMAT ━━━
 
-Return ONLY a valid JSON object with exactly these three keys:
+Return ONLY a valid JSON object with exactly these three keys.
+Your response MUST start with `{` and end with `}`. Do not include markdown,
+backticks, or any text outside the JSON object.
+
+Example:
 {
-  "type": "<one of: direct, single, multi_hop, graph>",
-  "confidence": <float between 0.0 and 1.0>,
-  "reason": "<one sentence explaining your classification>"
+  "type": "single",
+  "confidence": 0.95,
+  "reason": "The question asks for a specific fact that requires retrieving the relevant document chunk."
 }
 
-Do not include markdown, backticks, or any text outside the JSON object.\
+Now classify the following question.
 """
 
 ROUTER_USER_TEMPLATE = "Question: {question}"
@@ -254,21 +256,21 @@ class RouterAgent:
         gpt-4o-mini handles this with >95% accuracy at 10x lower cost.
         We save gpt-4o for the generation step where quality matters most.
 
-    Why response_format={"type": "json_object"}?
-      OpenAI's JSON mode guarantees the response is valid JSON.
-      Without it, the model occasionally wraps output in ```json``` fences
-      or adds preamble text, breaking json.loads(). JSON mode prevents this.
-      Note: the system prompt must mention "JSON" for JSON mode to activate.
+    NOTE: Groq does NOT support response_format=json_object. Instead, we rely
+    on a strongly-worded prompt and temperature=0.1 to ensure valid JSON output.
+    We also add a regex fallback in _classify() to extract JSON from markdown
+    fences just in case the model adds them.
     """
 
     def __init__(self):
+        # response_format removed - Groq does not support this parameter.
+        # We enforce JSON via prompt and use temperature=0.1 for flexibility.
         self.llm = ChatOpenAI(
             model=settings.router_model,
             api_key=settings.openai_api_key,
             base_url=settings.llm_base_url,
-            temperature=0.0,                              # fully deterministic routing
-            response_format={"type": "json_object"},      # guaranteed valid JSON output
-            max_tokens=200,                               # reason + type + confidence fits in 200
+            temperature=0.1,          # 0.0 → 0.1 for better JSON generation
+            max_tokens=300,           # 200 → 300 to leave room for the reason field
         )
         self._mem0_client = None   # lazy-initialized to avoid startup failures
 
@@ -278,6 +280,9 @@ class RouterAgent:
     def mem0(self):
         """
         Lazy Mem0 client initialization.
+
+        Uses the existing embedder singleton from app.services.embedder
+        to avoid loading a second SentenceTransformer instance.
 
         Why lazy?
           Mem0 makes a connection on instantiation. If Qdrant is not running
@@ -290,9 +295,9 @@ class RouterAgent:
             document retrieval (settings.qdrant_host/port), just a
             different collection (settings.mem0_collection_name) so
             memories never mix with document chunks.
-          - embedder: the SAME local sentence-transformers model already
-            used for document embeddings (settings.embedding_model) - runs
-            on CPU, no API call, no extra cost.
+          - embedder: uses the SAME local sentence-transformers model already
+            loaded by app.services.embedder - runs on CPU, no API call,
+            no extra cost, and crucially - no duplicate model loading.
           - llm: whatever OpenAI-compatible endpoint the rest of the app
             already uses (settings.openai_api_key / settings.llm_base_url -
             e.g. Groq), used only to extract memorable facts from each
@@ -312,6 +317,7 @@ class RouterAgent:
                     logger.info("Mem0 client initialized (hosted Mem0 Platform).")
                 else:
                     from mem0 import Memory
+
                     config = {
                         "vector_store": {
                             "provider": "qdrant",
@@ -322,9 +328,13 @@ class RouterAgent:
                                 "embedding_model_dims": settings.embedding_dim,
                             },
                         },
+                        # ── CHANGED: use custom provider with existing embedder ──
                         "embedder": {
-                            "provider": "huggingface",
-                            "config": {"model": settings.embedding_model},
+                            "provider": "custom",
+                            "config": {
+                                "embed": embedder.embed,               # callable: list[str] → list[list[float]]
+                                "embedding_dims": settings.embedding_dim,
+                            },
                         },
                         "llm": {
                             "provider": "openai",
@@ -338,7 +348,7 @@ class RouterAgent:
                     self._mem0_client = Memory.from_config(config)
                     logger.info(
                         "Mem0 initialized (embedded - Qdrant collection=%s, "
-                        "local embedder, LLM via %s).",
+                        "using existing embedder, LLM via %s).",
                         settings.mem0_collection_name,
                         settings.llm_base_url or "OpenAI default",
                     )
@@ -484,7 +494,7 @@ class RouterAgent:
         """
         from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
         groq_rate_limiter.acquire(estimate_tokens(
-            ROUTER_SYSTEM_PROMPT, question, max_output_tokens=200,
+            ROUTER_SYSTEM_PROMPT, question, max_output_tokens=300,
         ))
         response = self.llm.invoke([
             SystemMessage(content=ROUTER_SYSTEM_PROMPT),
@@ -497,8 +507,9 @@ class RouterAgent:
         Classify the question complexity. Returns RouterOutput.
 
         Two-step process:
-          1. Call LLM → raw JSON string
-          2. Parse and validate with Pydantic RouterOutput model
+          1. Call LLM → raw string
+          2. Clean the string (extract JSON with regex), parse and validate
+             with Pydantic RouterOutput model.
 
         Error handling strategy:
           - JSON parse error → log and return safe fallback (single, confidence=0.5)
@@ -515,7 +526,15 @@ class RouterAgent:
         Any confidence below 0.7 in production should trigger alert review.
         """
         try:
-            raw_json = self._call_llm(question)
+            raw_response = self._call_llm(question)
+
+            # Regex to extract the JSON object (removes markdown code fences)
+            json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
+            if json_match:
+                raw_json = json_match.group(0)
+            else:
+                raw_json = raw_response
+
             parsed_dict = json.loads(raw_json)
             return RouterOutput(**parsed_dict)
 
@@ -523,7 +542,7 @@ class RouterAgent:
             logger.error(
                 "Router: JSON parse error (falling back to 'single'): %s | "
                 "raw response: %s",
-                e, raw_json[:200] if "raw_json" in dir() else "N/A",
+                e, raw_response[:200] if 'raw_response' in dir() else "N/A",
             )
         except Exception as e:
             logger.error(

@@ -43,9 +43,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import re
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Dict, Any
 
 from app.core.config import settings
 
@@ -307,11 +308,12 @@ class PDFChunker:
         return chunks
 
 
-# ── LangGraph node function ────────────────────────────────────────────────────
+# ── Module-level singleton ────────────────────────────────────────────────────
 
-# Module-level chunker singleton
 _chunker = PDFChunker()
 
+
+# ── LangGraph node function ────────────────────────────────────────────────────
 
 def chunk_document(state: "AgentState") -> dict:
     """
@@ -345,3 +347,24 @@ def chunk_document(state: "AgentState") -> dict:
         "doc_id": doc_id,
         "chunk_count": len(chunks),
     }
+
+
+# ── Top‑level convenience function for external use ───────────────────────────
+
+def chunk_pdf(pdf_path: str) -> List[Dict[str, Any]]:
+    """
+    Convenience function to chunk a PDF file from a filesystem path.
+
+    This is the function imported by `ingest_service.py`. It reads the file,
+    chunks it, and returns the list of chunk dicts.
+
+    Args:
+        pdf_path: Path to the PDF file on disk.
+
+    Returns:
+        List of chunk dicts (same format as `PDFChunker.chunk()`).
+    """
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+    filename = os.path.basename(pdf_path)
+    return _chunker.chunk(pdf_bytes, filename=filename)
