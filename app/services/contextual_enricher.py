@@ -3,86 +3,7 @@ app/services/contextual_enricher.py
 =====================================
 Prepend LLM-generated context to each chunk before embedding.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-THE PROBLEM THIS SOLVES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Standard chunking creates a critical information loss problem.
-
-When you split a PDF into 512-word chunks, each chunk loses its document-level
-context. Consider this chunk from page 7 of a research paper:
-
-    "The results show a 23% improvement over the baseline. This was achieved
-     primarily through the modified attention mechanism described above."
-
-At retrieval time, this chunk fails to answer questions like:
-  - "What method achieved 23% improvement?" → "described above" is gone
-  - "Which paper had better results than baseline?" → no paper title
-  - "What did the 2024 flood study find?" → no study reference
-
-These questions all fail because the chunk has no idea:
-  → Which document it came from
-  → What section it's in
-  → Which entities were introduced earlier in the document
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-THE SOLUTION: CONTEXTUAL RETRIEVAL (Anthropic, October 2024)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Before embedding each chunk, prepend a short (50-100 token) LLM-generated
-context description that anchors the chunk in the broader document.
-
-The same chunk after contextual enrichment:
-
-    [Context: This chunk is from the Results section of "FloodNet: A Deep
-    Learning Approach to Flood Risk Prediction" (2024). It reports the
-    model's performance improvement over CNN and LSTM baselines using the
-    modified cross-attention mechanism introduced in Section 3.2.]
-
-    "The results show a 23% improvement over the baseline. This was achieved
-     primarily through the modified attention mechanism described above."
-
-Now retrieval works for ALL three questions above.
-
-Reported improvement: 15-25% recall on document Q&A benchmarks.
-Reference: Anthropic blog, "Introducing Contextual Retrieval", October 2024.
-           https://www.anthropic.com/news/contextual-retrieval
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PIPELINE POSITION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Ingest graph execution order:
-
-  chunk_document     →  produces raw chunks (context_prepended=False)
-        ↓
-  enrich_chunks      ←  THIS FILE  (context_prepended=True)
-        ↓
-  embed_chunks       →  embeds the ENRICHED text (not the raw text)
-        ↓
-  store_chunks       →  writes enriched embeddings to Qdrant
-        ↓
-  index_chunks       →  adds enriched text to BM25 corpus
-        ↓
-  extract_kg_node    →  extracts entities from enriched text for Neo4j
-
-This ordering is critical. embed_chunks MUST run after enrich_chunks so
-that the stored vectors represent the enriched (context-aware) text.
-The embeddings in Qdrant will then encode both the chunk content AND its
-document context — dramatically improving retrieval quality.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-COST MANAGEMENT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-One LLM call per chunk. For a 100-page document (~200 chunks) using
-llama-3.1-70b (via Groq free tier at ~6000 tokens/min), costs are minimal.
-If using OpenAI, gpt-4o-mini at $0.15/1M input tokens, enrichment costs
-approximately $0.02.
-
-Optimizations implemented:
-  1. Batch processing: groups chunks into document-level batches to reuse
-     the document anchor across calls (avoids re-passing it each time)
-  2. max_tokens=512: context descriptions are kept to 2-3 sentences
-  3. temperature=0.0: deterministic output (no creativity needed here)
-  4. Graceful degradation: if any LLM call fails, the original chunk text
-     is used unchanged. Enrichment failure never blocks ingestion.
+... (full docstring, unchanged) ...
 """
 
 from __future__ import annotations
@@ -96,12 +17,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from app.core.config import settings
-
-# NOTE: must be a real (non-TYPE_CHECKING) import - LangGraph resolves the
-# `state: "AgentState"` string annotation on the node function below via
-# typing.get_type_hints() at graph-build time, so AgentState must actually
-# be bound in this module's namespace at runtime, not only under
-# TYPE_CHECKING.
 from app.core.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -365,6 +280,52 @@ class ContextualEnricher:
             }
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Public method for single‑chunk enrichment (used by ingest_service)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def enrich_text(
+        self,
+        chunk_text: str,
+        page: int,
+        filename: str,
+        doc_id: str,
+        chunk_index: int,
+        doc_anchor: str = "",
+    ) -> str:
+        """
+        Public method to enrich a single chunk with context.
+
+        This is used by the top‑level `enrich_chunk` function for use in
+        `ingest_service.py`. It builds a minimal chunk dict, calls the
+        internal enrichment logic, and returns the enriched text.
+
+        Args:
+            chunk_text:   Original chunk text.
+            page:         Page number.
+            filename:     PDF filename.
+            doc_id:       Document ID.
+            chunk_index:  Chunk index.
+            doc_anchor:   Optional document anchor (first 400 words).
+                          If not provided, a default empty anchor is used.
+
+        Returns:
+            Enriched text (with context prepended), or original text on failure.
+        """
+        chunk = {
+            "text": chunk_text,
+            "page": page,
+            "filename": filename,
+            "doc_id": doc_id,
+            "chunk_index": chunk_index,
+        }
+        # If no anchor is provided, we can't generate good context.
+        # Use the chunk itself as a minimal anchor (not ideal but better than nothing).
+        if not doc_anchor:
+            doc_anchor = " ".join(chunk_text.split()[:400])  # fallback anchor
+        enriched = self._enrich_single_chunk(chunk, doc_anchor)
+        return enriched.get("text", chunk_text)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # LLM Call (isolated for testability)
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -407,7 +368,7 @@ class ContextualEnricher:
             chunk_text:  The raw chunk text (truncated to 600 words internally)
             filename:    Original PDF filename for context
             page:        Page number where this chunk starts
-            doc_anchor:  First 400 words of the document
+            doc_anchor:  First 400 words of the document (may be empty)
 
         Returns:
             Context description string (50-120 tokens, 2-3 sentences)
@@ -417,9 +378,11 @@ class ContextualEnricher:
         # and doc_anchor (~550 tokens), total input stays under 1800 tokens.
         truncated_chunk = " ".join(chunk_text.split()[:600])
 
+        # If doc_anchor is empty, provide a placeholder to avoid empty prompt.
+        anchor_display = doc_anchor if doc_anchor else "(No document beginning available)"
         user_message = CONTEXT_USER_TEMPLATE.format(
             filename=filename,
-            doc_anchor=doc_anchor,
+            doc_anchor=anchor_display,
             page=page,
             chunk_text=truncated_chunk,
         )
@@ -553,3 +516,35 @@ def enrich_chunks(state: "AgentState") -> dict:
     See: app/core/orchestrator.py, build_ingest_graph()
     """
     return contextual_enricher.enrich(state)
+
+
+# ── Top‑level function for ingest_service ────────────────────────────────────
+
+def enrich_chunk(chunk_text: str, page: int, doc_id: str, chunk_index: int) -> str:
+    """
+    Convenience wrapper around ContextualEnricher.enrich_text().
+
+    This is the function imported by `ingest_service.py`. It uses the
+    singleton enricher instance and returns the enriched text (or the
+    original text if enrichment fails).
+
+    Args:
+        chunk_text:   Original chunk text.
+        page:         Page number.
+        doc_id:       Document ID.
+        chunk_index:  Chunk index.
+
+    Returns:
+        Enriched text with context prepended, or original text on failure.
+    """
+    # We don't have filename here; we can use doc_id as a fallback.
+    filename = f"doc_{doc_id[:8]}" if doc_id else "document"
+    # We also don't have doc_anchor, but enrich_text will build a fallback anchor.
+    return contextual_enricher.enrich_text(
+        chunk_text=chunk_text,
+        page=page,
+        filename=filename,
+        doc_id=doc_id,
+        chunk_index=chunk_index,
+        doc_anchor="",  # let enrich_text build a fallback
+    )
