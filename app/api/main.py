@@ -778,7 +778,13 @@ async def websocket_query(websocket: WebSocket, session_id: str):
 # UVICORN ENTRY POINT (for local dev without docker)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-if __name__ == "__main__":
+def main() -> None:
+    """Entry point for running the API server directly.
+
+    Invoked via ``python -m app.api.main`` (see the ``if __name__ == "__main__"``
+    guard below). Extracted into a function so the uvicorn launch is unit-testable
+    without actually binding a socket.
+    """
     import uvicorn
     uvicorn.run(
         "app.api.main:app",
@@ -787,3 +793,7 @@ if __name__ == "__main__":
         reload=True,    # auto-reload on file changes (dev only)
         log_level="info",
     )
+
+
+if __name__ == "__main__":  # pragma: no cover - only executed when run as __main__
+    main()

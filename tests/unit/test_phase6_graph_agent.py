@@ -526,19 +526,22 @@ class TestExtractAndStoreNode:
         """
         If chunk 1's extraction fails (exception), chunk 2's triples must
         still be extracted and included in the result.
+
+        We stub _extract_triples_from_text directly (keyed on chunk text) to
+        keep the test deterministic: the real method is wrapped in tenacity
+        retries and runs under ThreadPoolExecutor, so mocking the raw LLM
+        invoke() would retry the "failing" chunk into a success and the
+        parallel completion order would be non-deterministic.
         """
+        from app.agents.graph_agent import Triple
         agent = make_agent_with_mocks()
-        call_count = [0]
 
-        def side_effect(messages):
-            call_count[0] += 1
-            if call_count[0] == 1:
+        def fake_extract(text: str):
+            if text.startswith("First"):
                 raise TimeoutError("Simulated failure on first chunk")
-            return make_extraction_json([
-                {"head": "C", "relation": "r", "tail": "D", "confidence": 0.7}
-            ])
+            return [Triple(head="C", relation="r", tail="D", confidence=0.7)]
 
-        agent.extraction_llm.invoke.side_effect = side_effect
+        agent._extract_triples_from_text = MagicMock(side_effect=fake_extract)
         mock_session = MagicMock()
         agent._driver.session.return_value.__enter__.return_value = mock_session
 
@@ -762,6 +765,24 @@ class TestGraphAgentExtra:
         with pytest.raises(ValueError):
             _parse_json_object("no json { unbalanced")
 
+    def test_parse_json_balanced_but_invalid_raises(self):
+        """A balanced { } block whose contents are NOT valid JSON must
+        still raise ValueError (lines 178-181: the inner json.loads fails,
+        the loop breaks, and the trailing raise fires)."""
+        from app.agents.graph_agent import _parse_json_object
+        # '{ "k": }' is balanced but syntactically invalid JSON.
+        raw = 'prefix text { "k": } trailing text'
+        with pytest.raises(ValueError):
+            _parse_json_object(raw)
+
+    def test_parse_json_leading_prose_only_then_balanced_invalid(self):
+        """The fast-path json.loads fails on prose, then the first balanced
+        block is found but invalid → ValueError (exercises the break path)."""
+        from app.agents.graph_agent import _parse_json_object
+        raw = 'some chatter then {"a": } more chatter'
+        with pytest.raises(ValueError):
+            _parse_json_object(raw)
+
     # ── lazy Neo4j driver init (lines 451-462) ──────────────────────────────
 
     def test_driver_lazy_connect_success(self, monkeypatch):
@@ -772,9 +793,11 @@ class TestGraphAgentExtra:
         agent._driver = None  # force the load branch
         fake_driver = MagicMock()
         fake_driver.verify_connectivity.return_value = None
-        with patch("neo4j.GraphDatabase", return_value=fake_driver) as mock_db:
+        # The driver property calls `GraphDatabase.driver(...)`, so we patch
+        # the `.driver` classmethod (not `GraphDatabase` itself).
+        with patch("neo4j.GraphDatabase.driver", return_value=fake_driver) as mock_driver:
             driver = agent.driver
-        mock_db.assert_called_once()
+        mock_driver.assert_called_once()
         assert driver is fake_driver
 
     def test_driver_connectivity_failure_raises(self, monkeypatch):
@@ -785,7 +808,7 @@ class TestGraphAgentExtra:
         agent._driver = None
         fake_driver = MagicMock()
         fake_driver.verify_connectivity.side_effect = RuntimeError("Neo4j down")
-        with patch("neo4j.GraphDatabase", return_value=fake_driver):
+        with patch("neo4j.GraphDatabase.driver", return_value=fake_driver):
             with pytest.raises(RuntimeError):
                 _ = agent.driver
 
@@ -812,12 +835,16 @@ class TestGraphAgentExtra:
         """A BadRequestError mentioning response_format falls back to the
         plain LLM (lines 692-701)."""
         from openai import BadRequestError
+        from unittest.mock import MagicMock
+
+        # openai SDK 1.x: BadRequestError requires response/body kwargs.
+        err = BadRequestError(
+            "response_format is not supported", response=MagicMock(), body={}
+        )
 
         agent = make_agent_with_mocks()
         agent.extraction_llm = MagicMock()
-        agent.extraction_llm.invoke.side_effect = BadRequestError(
-            "response_format is not supported"
-        )
+        agent.extraction_llm.invoke.side_effect = err
         agent.extraction_llm_plain = MagicMock()
         agent.extraction_llm_plain.invoke.return_value = MagicMock(
             content='{"triples": []}'
@@ -827,15 +854,31 @@ class TestGraphAgentExtra:
         agent.extraction_llm_plain.invoke.assert_called_once()
 
     def test_call_extraction_llm_reraises_other_bad_request(self):
-        """A BadRequestError without the JSON-mode keywords is re-raised
-        (line 703)."""
+        """A BadRequestError without the JSON-mode keywords hits the `raise`
+        at line 703 (NOT the plain-LLM fallback). Because _call_extraction_llm
+        is wrapped in @retry(reraise=False), tenacity re-runs the call and then
+        surfaces the failure as a RetryError whose last attempt is the original
+        BadRequestError. We assert both: the fallback client is never used, and
+        the underlying error is the BadRequestError."""
         from openai import BadRequestError
+        from tenacity import RetryError
+        from unittest.mock import MagicMock
+
+        err = BadRequestError("totally unrelated", response=MagicMock(), body={})
 
         agent = make_agent_with_mocks()
         agent.extraction_llm = MagicMock()
-        agent.extraction_llm.invoke.side_effect = BadRequestError("totally unrelated")
-        with pytest.raises(BadRequestError):
+        agent.extraction_llm.invoke.side_effect = err
+        agent.extraction_llm_plain = MagicMock()
+
+        with pytest.raises(RetryError) as exc_info:
             agent._call_extraction_llm("some text")
+
+        # The re-raised (not swallowed) error must be the original BadRequestError.
+        assert isinstance(exc_info.value.last_attempt.exception(), BadRequestError)
+        # The JSON-mode fallback client must NOT have been used for an
+        # unrelated BadRequestError.
+        agent.extraction_llm_plain.invoke.assert_not_called()
 
     # ── _extract_triples_from_text handlers (lines 735-756) ──────────────────
 

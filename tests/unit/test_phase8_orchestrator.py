@@ -142,79 +142,76 @@ class TestSafeSerialize:
 
 class TestDirectAnswer:
 
-    def _run(self, state: dict, llm_response: str = "Cosine similarity measures angle.") -> dict:
-        """Run direct_answer() with a mocked LLM."""
+    def _run(self, state: dict, llm_response: str = "Cosine similarity measures angle."):
+        """Run direct_answer() with a mocked LLM.
+
+        direct_answer() builds its client via ``make_llm()`` (not a module-level
+        ``ChatOpenAI`` symbol), so we patch ``make_llm`` and return a canned
+        invoke() result. Returns (result, mock_llm_instance) so callers can
+        inspect the prompt that was sent.
+        """
         from app.core.orchestrator import direct_answer
-        with patch("app.core.orchestrator.ChatOpenAI") as MockLLM:
-            mock_instance = MagicMock()
-            mock_instance.invoke.return_value = MagicMock(content=llm_response)
-            MockLLM.return_value = mock_instance
-            return direct_answer(state)
+        mock_instance = MagicMock()
+        mock_instance.invoke.return_value = MagicMock(content=llm_response)
+        with patch("app.core.orchestrator.make_llm", return_value=mock_instance):
+            result = direct_answer(state)
+        return result, mock_instance
 
     def test_returns_answer_string(self):
-        result = self._run({"question": "What is cosine similarity?"})
+        result, _ = self._run({"question": "What is cosine similarity?"})
         assert result["answer"] == "Cosine similarity measures angle."
 
     def test_sets_judge_passed_true(self):
         """Direct answers skip judging — judge_passed must be True."""
-        result = self._run({"question": "What is RAG?"})
+        result, _ = self._run({"question": "What is RAG?"})
         assert result["judge_passed"] is True
 
     def test_sets_faithfulness_score_to_one(self):
         """Parametric knowledge answers have no hallucination risk — score=1.0."""
-        result = self._run({"question": "What is RAG?"})
+        result, _ = self._run({"question": "What is RAG?"})
         assert result["faithfulness_score"] == 1.0
 
     def test_returns_empty_sources(self):
         """Direct answers cite no documents — sources must be []."""
-        result = self._run({"question": "What is RAG?"})
+        result, _ = self._run({"question": "What is RAG?"})
         assert result["sources"] == []
 
     def test_injects_memories_into_prompt(self):
         """Mem0 memories must appear in the LLM prompt for personalization."""
         from langchain_core.messages import HumanMessage
-        from app.core.orchestrator import direct_answer
 
-        with patch("app.core.orchestrator.ChatOpenAI") as MockLLM:
-            mock_instance = MagicMock()
-            mock_instance.invoke.return_value = MagicMock(content="Answer.")
-            MockLLM.return_value = mock_instance
+        state = {
+            "question": "What is RAG?",
+            "long_term_memories": [
+                {"memory": "User works on flood prediction.", "score": 0.9},
+            ],
+        }
+        _, mock_instance = self._run(state)
 
-            direct_answer({
-                "question": "What is RAG?",
-                "long_term_memories": [
-                    {"memory": "User works on flood prediction.", "score": 0.9},
-                ],
-            })
-
-            call_messages = mock_instance.invoke.call_args[0][0]
-            human_msg = call_messages[1]
-            assert isinstance(human_msg, HumanMessage)
-            assert "flood prediction" in human_msg.content
+        call_messages = mock_instance.invoke.call_args[0][0]
+        human_msg = call_messages[1]
+        assert isinstance(human_msg, HumanMessage)
+        assert "flood prediction" in human_msg.content
 
     def test_skips_memory_section_when_no_memories(self):
         from langchain_core.messages import HumanMessage
-        from app.core.orchestrator import direct_answer
 
-        with patch("app.core.orchestrator.ChatOpenAI") as MockLLM:
-            mock_instance = MagicMock()
-            mock_instance.invoke.return_value = MagicMock(content="Answer.")
-            MockLLM.return_value = mock_instance
+        _, mock_instance = self._run(
+            {"question": "What is RAG?", "long_term_memories": []}
+        )
 
-            direct_answer({"question": "What is RAG?", "long_term_memories": []})
-
-            call_messages = mock_instance.invoke.call_args[0][0]
-            human_msg = call_messages[1]
-            assert "User context" not in human_msg.content
+        call_messages = mock_instance.invoke.call_args[0][0]
+        human_msg = call_messages[1]
+        assert "User context" not in human_msg.content
 
     def test_strips_whitespace_from_llm_response(self):
-        result = self._run({"question": "What is RAG?"}, llm_response="  Padded answer.  ")
+        result, _ = self._run({"question": "What is RAG?"}, llm_response="  Padded answer.  ")
         assert result["answer"] == "Padded answer."
 
     def test_output_keys_valid_in_agent_state(self):
         from app.core.state import AgentState
         valid_keys = set(AgentState.__annotations__.keys())
-        result = self._run({"question": "What is X?"})
+        result, _ = self._run({"question": "What is X?"})
         for key in result:
             assert key in valid_keys, f"direct_answer() returned invalid key '{key}'"
 
@@ -808,3 +805,367 @@ class TestGraphWiring:
     def test_singleton_is_arap_orchestrator_instance(self):
         from app.core.orchestrator import orchestrator, ARAPOrchestrator
         assert isinstance(orchestrator, ARAPOrchestrator)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Additional coverage: branches not exercised by the happy-path tests above
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+# Targets (per coverage report):
+#   orchestrator.py: 128-131 (LangSmith tracing env setup),
+#                     296-298 (Redis checkpointer init success path),
+#                     662-677 (stream_query() real body)
+#   main.py:          123-132 (_bm25_reload_listener body),
+#                     163-164 / 171-172 (lifespan except branches),
+#                     178-182 (lifespan BM25 load + success log),
+#                     451-466 (get_ingest_status SUCCESS/FAILURE/PENDING),
+#                     531-545 (eval_endpoint try/except),
+#                     558 / 564 / 570 / 581 (analytics endpoints),
+#                     745 (WebSocket final_sources accumulation),
+#                     773-774 (WebSocket top-level fatal except),
+#                     781-789 (main() entry point — guard is pragmatized)
+
+
+class TestOrchestratorCheckpointer:
+
+    def test_checkpointer_initializes_when_redis_reachable(self):
+        """RedisSaver(...) + .setup() + info log (orchestrator.py 296-298)."""
+        from app.core.orchestrator import ARAPOrchestrator
+        orc = ARAPOrchestrator()
+        orc._checkpointer = None  # force the lazy-init branch
+        fake_saver = MagicMock()
+        with patch("langgraph.checkpoint.redis.RedisSaver", return_value=fake_saver):
+            cp = orc.checkpointer
+        assert cp is fake_saver
+        fake_saver.setup.assert_called_once()
+
+    def test_checkpointer_returns_none_when_redis_unreachable(self):
+        """On any Redis error the checkpointer degrades to None (multi-turn
+        memory off, but the app keeps working)."""
+        from app.core.orchestrator import ARAPOrchestrator
+        orc = ARAPOrchestrator()
+        orc._checkpointer = None
+        with patch("langgraph.checkpoint.redis.RedisSaver",
+                   side_effect=ConnectionError("no redis")):
+            cp = orc.checkpointer
+        assert cp is None
+
+
+class TestLangSmithTracing:
+
+    def test_tracing_env_set_when_configured(self, monkeypatch):
+        """The module-level LangSmith block (orchestrator.py 128-131) only
+        runs at import time when both tracing flags are set, so we flip the
+        settings and reload the module to exercise it."""
+        import importlib
+        import os
+        from app.core import orchestrator
+
+        monkeypatch.setattr(orchestrator.settings, "langchain_tracing_v2", True)
+        monkeypatch.setattr(orchestrator.settings, "langchain_api_key", "test-key")
+        monkeypatch.setattr(orchestrator.settings, "langchain_project", "proj")
+        monkeypatch.delenv("LANGCHAIN_TRACING_V2", raising=False)
+        try:
+            importlib.reload(orchestrator)
+            assert os.environ.get("LANGCHAIN_TRACING_V2") == "true"
+            assert os.environ.get("LANGCHAIN_API_KEY") == "test-key"
+            assert os.environ.get("LANGCHAIN_PROJECT") == "proj"
+        finally:
+            # Restore the original (tracing-off) module state.
+            monkeypatch.undo()
+            importlib.reload(orchestrator)
+
+
+class TestStreamQuery:
+
+    @pytest.mark.asyncio
+    async def test_stream_query_yields_serialized_events(self):
+        """stream_query() (orchestrator.py 662-677) wraps query_graph.stream()
+        and applies _safe_serialize to every node update.
+
+        Note: LangGraph's sync ``.stream()`` returns a regular (sync) generator,
+        which stream_query iterates with a plain ``for`` — so the mock must be a
+        sync generator too, while stream_query *itself* is an async generator.
+        """
+        from app.core.orchestrator import ARAPOrchestrator
+
+        orc = ARAPOrchestrator()
+        orc._checkpointer = None  # skip Redis for the cached graph
+        # LangGraph stream_mode="updates" yields raw events of shape
+        # {node_name: state_update_dict}; stream_query iterates event.items()
+        # to split node_name / node_output and re-emits {"node", "data"}.
+        raw_events = [
+            {"router": {"query_type": "single"}},
+            {"judge": {
+                "answer": "A",
+                "faithfulness_score": 0.9,
+                "raw_bytes": b"should-be-stripped",
+            }},
+        ]
+
+        def _fake_stream(*args, **kwargs):
+            for ev in raw_events:
+                yield ev
+
+        orc._query_graph = MagicMock()
+        orc._query_graph.stream.side_effect = _fake_stream
+
+        collected = [ev async for ev in orc.stream_query("Question?", "sess", "user")]
+
+        assert collected[0]["node"] == "router"
+        assert "raw_bytes" not in collected[1]["data"]      # stripped by _safe_serialize
+        assert collected[1]["data"]["answer"] == "A"
+
+
+class TestIngestStatusEndpoint:
+
+    @pytest.mark.asyncio
+    async def test_status_success_returns_result(self):
+        from app.api.main import get_ingest_status
+        fake = MagicMock()
+        fake.status = "SUCCESS"
+        fake.result = {"doc_id": "d", "chunk_count": 2, "kg_triples": 1}
+        with patch("app.api.main.AsyncResult", return_value=fake):
+            resp = await get_ingest_status("t1")
+        assert resp.status == "SUCCESS"
+        assert resp.result["doc_id"] == "d"
+
+    @pytest.mark.asyncio
+    async def test_status_failure_returns_error(self):
+        from app.api.main import get_ingest_status
+        fake = MagicMock()
+        fake.status = "FAILURE"
+        fake.info = RuntimeError("boom")
+        with patch("app.api.main.AsyncResult", return_value=fake):
+            resp = await get_ingest_status("t2")
+        assert resp.status == "FAILURE"
+        assert resp.error is not None
+
+    @pytest.mark.asyncio
+    async def test_status_pending_has_no_extra_fields(self):
+        from app.api.main import get_ingest_status
+        fake = MagicMock()
+        fake.status = "PENDING"
+        with patch("app.api.main.AsyncResult", return_value=fake):
+            resp = await get_ingest_status("t3")
+        assert resp.status == "PENDING"
+        assert resp.result is None
+        assert resp.error is None
+
+
+class TestEvalEndpoint:
+
+    @pytest.mark.asyncio
+    async def test_eval_returns_report(self):
+        from app.api.main import eval_endpoint, EvalRequest
+        report = {"run_id": 1, "faithfulness": 0.9}
+        with patch("app.api.main.run_ragas_evaluation", new=AsyncMock(return_value=report)):
+            resp = await eval_endpoint(EvalRequest(limit=5, no_seed=False))
+        assert resp["run_id"] == 1
+
+    @pytest.mark.asyncio
+    async def test_eval_500_on_failure(self):
+        from app.api.main import eval_endpoint, EvalRequest
+        from fastapi import HTTPException
+        with patch("app.api.main.run_ragas_evaluation",
+                   new=AsyncMock(side_effect=RuntimeError("eval died"))):
+            with pytest.raises(HTTPException) as exc:
+                await eval_endpoint(EvalRequest())
+        assert exc.value.status_code == 500
+
+
+class TestAnalyticsEndpoints:
+
+    @pytest.mark.asyncio
+    async def test_analytics_summary(self):
+        with patch("app.api.main.analytics_service.summary",
+                   return_value={"total_queries": 5}):
+            from app.api.main import analytics_summary
+            resp = await analytics_summary()
+        assert resp["total_queries"] == 5
+
+    @pytest.mark.asyncio
+    async def test_analytics_documents(self):
+        with patch("app.api.main.analytics_service.top_documents",
+                   return_value=[{"filename": "a.pdf"}]):
+            from app.api.main import analytics_documents
+            resp = await analytics_documents(limit=3)
+        assert resp[0]["filename"] == "a.pdf"
+
+    @pytest.mark.asyncio
+    async def test_analytics_eval_trend(self):
+        with patch("app.api.main.analytics_service.eval_trend",
+                   return_value=[{"run_id": 1}]):
+            from app.api.main import analytics_eval_trend
+            resp = await analytics_eval_trend(limit=10)
+        assert resp[0]["run_id"] == 1
+
+    @pytest.mark.asyncio
+    async def test_analytics_dashboard_returns_html(self):
+        from app.api.main import analytics_dashboard
+        resp = await analytics_dashboard()
+        assert b"ARAP Analytics" in resp.body
+
+
+class TestLifespan:
+
+    @pytest.mark.asyncio
+    async def test_startup_runs_full_warmup_and_load(self):
+        """Covers lifespan.py 162 (warmup), 168-170 (graph compile),
+        178-182 (BM25 load + success log)."""
+        from app.api.main import lifespan, app
+
+        emb = MagicMock()
+        emb.warmup = MagicMock()
+        orc = MagicMock()
+        orc.ingest_graph = MagicMock()
+        orc.query_graph = MagicMock()
+        vs = MagicMock()
+        vs.client = MagicMock()
+        bm25 = MagicMock()
+        bm25.size = 7
+
+        with patch("app.services.embedder.embedder", emb), \
+             patch("app.api.main.orchestrator", orc), \
+             patch("app.services.vector_store.vector_store", vs), \
+             patch("app.services.bm25_index.bm25_index", bm25), \
+             patch("app.api.main._bm25_reload_listener"):
+            async with lifespan(app):
+                pass
+
+        emb.warmup.assert_called_once()
+        bm25.load_from_qdrant.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_startup_warmup_failure_is_non_fatal(self):
+        """Embedding warmup failure must be caught (lifespan.py 163-164)
+        and startup must continue."""
+        from app.api.main import lifespan, app
+
+        emb = MagicMock()
+        emb.warmup.side_effect = RuntimeError("no model")
+        orc = MagicMock()
+        orc.ingest_graph = MagicMock()
+        orc.query_graph = MagicMock()
+        vs = MagicMock()
+        vs.client = MagicMock()
+        bm25 = MagicMock()
+        bm25.size = 7
+
+        with patch("app.services.embedder.embedder", emb), \
+             patch("app.api.main.orchestrator", orc), \
+             patch("app.services.vector_store.vector_store", vs), \
+             patch("app.services.bm25_index.bm25_index", bm25), \
+             patch("app.api.main._bm25_reload_listener"):
+            async with lifespan(app):
+                pass
+        emb.warmup.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_startup_graph_compile_failure_is_logged(self):
+        """Graph compilation failure must be caught (lifespan.py 171-172)."""
+        from app.api.main import lifespan, app
+
+        emb = MagicMock()
+        emb.warmup = MagicMock()
+        orc = MagicMock()
+        orc.ingest_graph = MagicMock(side_effect=RuntimeError("bad graph"))
+        orc.query_graph = MagicMock()
+        vs = MagicMock()
+        vs.client = MagicMock()
+        bm25 = MagicMock()
+        bm25.size = 7
+
+        with patch("app.services.embedder.embedder", emb), \
+             patch("app.api.main.orchestrator", orc), \
+             patch("app.services.vector_store.vector_store", vs), \
+             patch("app.services.bm25_index.bm25_index", bm25), \
+             patch("app.api.main._bm25_reload_listener"):
+            async with lifespan(app):
+                pass
+
+
+class TestBM25ReloadListener:
+
+    def test_processes_reload_signal(self):
+        """_bm25_reload_listener (main.py 123-132) must rebuild BM25 from
+        Qdrant when it receives a pubsub 'message'."""
+        from app.api.main import _bm25_reload_listener
+
+        fake_pubsub = MagicMock()
+        fake_pubsub.listen.return_value = iter([{"type": "message", "data": "reload"}])
+        fake_redis = MagicMock()
+        fake_redis.pubsub.return_value = fake_pubsub
+
+        with patch("redis.from_url", return_value=fake_redis), \
+             patch("app.services.bm25_index.bm25_index") as bm25, \
+             patch("app.services.vector_store.vector_store") as vs:
+            bm25.size = 10
+            _bm25_reload_listener()
+
+        bm25.load_from_qdrant.assert_called_once()
+        # First positional arg must be the Qdrant client.
+        assert bm25.load_from_qdrant.call_args.args[0] is vs.client
+
+
+class TestWebSocketDirect:
+
+    @pytest.mark.asyncio
+    async def test_collects_sources_and_emits_done(self):
+        """WebSocket final_sources accumulation (main.py 745) + consolidated
+        'done' message (752-758)."""
+        from app.api.main import websocket_query
+        from fastapi import WebSocketDisconnect
+
+        ws = MagicMock()
+        ws.accept = AsyncMock()
+        # First call delivers the question; second call ends the connection so
+        # the `while True` receive loop terminates cleanly.
+        ws.receive_text = AsyncMock(side_effect=[
+            json.dumps({"question": "What?"}),
+            WebSocketDisconnect(),
+        ])
+        ws.send_json = AsyncMock()
+
+        async def _gen(*args, **kwargs):
+            yield {"node": "generate", "data": {
+                "answer": "A", "sources": [{"index": 1, "text": "t"}]}}
+            yield {"node": "judge", "data": {
+                "faithfulness_score": 0.9, "query_type": "single"}}
+
+        with patch("app.api.main.orchestrator.stream_query", side_effect=_gen):
+            await websocket_query(ws, "sess")
+
+        sent = [call.args[0] for call in ws.send_json.call_args_list]
+        done = next(m for m in sent if m.get("type") == "done")
+        assert done["sources"] == [{"index": 1, "text": "t"}]
+        assert done["faithfulness_score"] == 0.9
+
+    @pytest.mark.asyncio
+    async def test_fatal_exception_caught_by_outer_handler(self):
+        """A non-WebSocketDisconnect error outside the per-message loop is
+        caught by the top-level except (main.py 773-774) and does not
+        propagate out of the endpoint."""
+        from app.api.main import websocket_query
+
+        ws = MagicMock()
+        ws.accept = AsyncMock()
+        ws.receive_text = AsyncMock(side_effect=RuntimeError("kaboom"))
+        ws.send_json = AsyncMock()
+
+        with patch("app.api.main.orchestrator"):
+            # Must not raise — the outer except swallows it.
+            await websocket_query(ws, "sess")
+
+
+class TestMainEntrypoint:
+
+    def test_main_launches_uvicorn(self):
+        """main() (main.py 782-789) launches uvicorn with the app target."""
+        from app.api.main import main
+        with patch("uvicorn.run") as mock_run:
+            main()
+        mock_run.assert_called_once()
+        args, kwargs = mock_run.call_args
+        assert args[0] == "app.api.main:app"
+        assert kwargs.get("port") == 8000
