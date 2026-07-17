@@ -589,3 +589,45 @@ class TestDownstreamCompatibility:
         # Both pre-existing and new key must be present
         assert result["latency_ms"]["some_init_node"] == 5.2
         assert "router" in result["latency_ms"]
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Mem0 client initialization branches
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestMem0ClientInit:
+    """Covers RouterAgent._get_mem0_client() initialization branches.
+
+    _get_mem0_client() is the lazy constructor for the Mem0 client. It has
+    two init paths (hosted MemoryClient when settings.mem0_api_key is set,
+    else the embedded Memory.from_config) plus a success log on each. The
+    other test classes inject a mock ``_mem0_client`` directly, so these
+    branches (router.py lines 316-318 and 363) are otherwise unexercised.
+    """
+
+    def test_hosted_mem0_client_init(self, monkeypatch):
+        """settings.mem0_api_key set → hosted MemoryClient (lines 316-318)."""
+        from app.core.config import settings
+        from app.agents.router import RouterAgent
+
+        monkeypatch.setattr(settings, "mem0_api_key", "fake-hosted-key")
+        agent = RouterAgent()
+        with patch("mem0.MemoryClient", return_value=MagicMock()) as mock_client:
+            client = agent.mem0()
+
+        mock_client.assert_called_once()
+        assert client is not None
+
+    def test_embedded_mem0_client_init_logs_success(self, monkeypatch):
+        """No api key → embedded Memory.from_config; success log (line 363)
+        is reached only when from_config succeeds (existing tests let it raise)."""
+        from app.core.config import settings
+        from app.agents.router import RouterAgent
+
+        monkeypatch.setattr(settings, "mem0_api_key", None)
+        agent = RouterAgent()
+        with patch("mem0.Memory.from_config", return_value=MagicMock()) as mock_from:
+            client = agent.mem0()
+
+        mock_from.assert_called_once()
+        assert client is not None

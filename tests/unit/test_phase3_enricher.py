@@ -449,3 +449,84 @@ class TestLangGraphNodeIntegration:
 
         assert "embeddings" in embedding_result
         assert len(embedding_result["embeddings"]) == 3
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Extra coverage: defensive fallback + public helpers
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestEnricherDefensiveAndHelpers:
+    """Covers the defensive empty-context fallback and the public helpers."""
+
+    def _enricher_with_content(self, content: str):
+        from app.services.contextual_enricher import ContextualEnricher
+
+        enricher = ContextualEnricher()
+        enricher.llm = MagicMock()
+        enricher.llm.invoke.return_value = MagicMock(content=content)
+        return enricher
+
+    def test_empty_context_falls_back_to_original(self):
+        """An empty (but non-error) LLM response must keep the original text
+        (lines 262-266): the chunk is returned unchanged with
+        context_prepended=False."""
+        enricher = self._enricher_with_content("")  # empty context
+        chunks = [make_chunk("The model achieves 97% accuracy on the test set.")]
+        result = enricher.enrich({"chunks": chunks})
+        out = result["chunks"][0]
+        assert out["context_prepended"] is False
+        assert out["text"] == "The model achieves 97% accuracy on the test set."
+
+    def test_enrich_text_public_method_uses_fallback_anchor(self):
+        """enrich_text() (lines 319-331) must build a fallback anchor when
+        doc_anchor is empty (lines 328-329) and return the enriched text."""
+        enricher = self._enricher_with_content("Context about the section.")
+        text = enricher.enrich_text(
+            chunk_text="Some chunk text here.",
+            page=2,
+            filename="f.pdf",
+            doc_id="doc12345abc",
+            chunk_index=3,
+            doc_anchor="",  # triggers the fallback anchor branch
+        )
+        assert isinstance(text, str)
+        assert "Some chunk text here." in text
+
+    def test_enrich_chunk_for_pipeline_delegates(self):
+        """Module-level enrich_chunk() (lines 558-559) must derive a filename
+        from doc_id and delegate to the singleton's enrich_text()."""
+        from app.services import contextual_enricher as ce_module
+
+        ce_module.contextual_enricher.clear_cache()
+        ce_module.contextual_enricher.llm = MagicMock()
+        ce_module.contextual_enricher.llm.invoke.return_value = MagicMock(
+            content="Pipeline-generated context."
+        )
+
+        text = ce_module.enrich_chunk(
+            chunk_text="Pipeline chunk text.",
+            page=1,
+            doc_id="doc12345abc",
+            chunk_index=0,
+            doc_anchor="optional anchor",
+        )
+        assert isinstance(text, str)
+        assert "Pipeline chunk text." in text
+
+    def test_pacing_sleep_between_chunk_calls(self, monkeypatch):
+        """When llm_call_min_interval_seconds > 0, enrich() must insert a
+        proactive pause BEFORE each chunk after the first (lines 178-181)."""
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "llm_call_min_interval_seconds", 0.001)
+        enricher = self._enricher_with_content("Context between chunks.")
+
+        sleeps = []
+        with patch("app.services.contextual_enricher.time.sleep",
+                   side_effect=lambda s: sleeps.append(s)):
+            result = enricher.enrich({"chunks": make_chunks(3)})
+
+        assert len(result["chunks"]) == 3
+        # First chunk runs immediately; chunks 2 and 3 each trigger one sleep.
+        assert len(sleeps) == 2
+        assert all(s == 0.001 for s in sleeps)

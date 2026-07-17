@@ -147,6 +147,25 @@ async def test_wrapper_ainvoke_cache_hit(llm_client):
     client.ainvoke.assert_not_called()
 
 
+async def test_wrapper_ainvoke_cache_miss_writes_cache(llm_client):
+    client = MagicMock()
+    client.model_name = "gpt-4o"
+    client.ainvoke = AsyncMock(return_value=AIMessage(
+        content="fresh async",
+        usage_metadata={"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+    ))
+    # Cache miss → the real client runs, usage is recorded, and the response
+    # is written back to the cache. Mirrors the sync invoke path (line 145).
+    with patch.object(llm_client, "llm_cache_get", return_value=None) as mock_get, \
+         patch.object(llm_client, "llm_cache_set") as mock_set:
+        wrapper = llm_client._LLMWrapper(client, use_cache=True)
+        result = await wrapper.ainvoke([("human", "q")])
+    assert result.content == "fresh async"
+    mock_get.assert_called_once()
+    mock_set.assert_called_once()
+    assert mock_set.call_args.args[2] == "fresh async"
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # attribute delegation + factory
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

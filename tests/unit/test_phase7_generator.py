@@ -784,3 +784,54 @@ class TestDownstreamAPICompatibility:
     def test_singleton_is_answer_generator_instance(self):
         from app.agents.generator import generator, AnswerGenerator
         assert isinstance(generator, AnswerGenerator)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Lazy model / Mem0 client init branches
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestGeneratorExtra:
+
+    def test_nli_model_lazy_load(self, monkeypatch):
+        """First access of the nli_model property loads the NLI
+        cross-encoder (generator.py lines 233-243)."""
+        from app.agents.generator import AnswerGenerator
+        from unittest.mock import patch
+
+        gen = AnswerGenerator()
+        gen._nli_model = None  # force the load branch
+        fake = MagicMock()
+        with patch("app.agents.generator.CrossEncoder", return_value=fake) as mock_ce:
+            model = gen.nli
+        mock_ce.assert_called_once()
+        assert model is fake
+
+    def test_mem0_hosted_init(self, monkeypatch):
+        """settings.mem0_api_key set → hosted MemoryClient
+        (generator.py lines 266-268)."""
+        from app.agents.generator import AnswerGenerator
+        from app.core.config import settings
+        from unittest.mock import patch
+
+        monkeypatch.setattr(settings, "mem0_api_key", "fake-key")
+        gen = AnswerGenerator()
+        gen._mem0_client = None
+        with patch("mem0.MemoryClient", return_value=MagicMock()) as mock_client:
+            client = gen.mem0
+        mock_client.assert_called_once()
+        assert client is not None
+
+    def test_mem0_embedded_init_logs(self, monkeypatch):
+        """No api key → embedded Memory.from_config; success log
+        (line 298) when from_config succeeds."""
+        from app.agents.generator import AnswerGenerator
+        from app.core.config import settings
+        from unittest.mock import patch
+
+        monkeypatch.setattr(settings, "mem0_api_key", None)
+        gen = AnswerGenerator()
+        gen._mem0_client = None
+        with patch("mem0.Memory.from_config", return_value=MagicMock()) as mock_from:
+            client = gen.mem0
+        mock_from.assert_called_once()
+        assert client is not None

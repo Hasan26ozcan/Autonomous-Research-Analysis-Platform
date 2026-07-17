@@ -725,3 +725,145 @@ class TestDownstreamCompatibility:
     def test_singleton_is_knowledge_graph_agent_instance(self):
         from app.agents.graph_agent import kg_agent, KnowledgeGraphAgent
         assert isinstance(kg_agent, KnowledgeGraphAgent)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Extra coverage: JSON parsing edge branches + lazy driver + defensive handlers
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestGraphAgentExtra:
+    """Covers graph_agent.py lines 150, 157, 169-183, 451-462,
+    552-554, 692-703, 735-756 — JSON parsing edge branches,
+    the lazy Neo4j driver init, and the defensive exception handlers
+    (parallel-loop exception, BadRequestError retry, JSONDecodeError /
+    generic Exception fallbacks in _extract_triples_from_text)."""
+
+    # ── _parse_json_object branches ───────────────────────────────────────────
+
+    def test_parse_json_empty_raises(self):
+        from app.agents.graph_agent import _parse_json_object
+        with pytest.raises(ValueError):
+            _parse_json_object("")
+
+    def test_parse_json_fenced(self):
+        """A markdown-fenced block is unwrapped (line 157)."""
+        from app.agents.graph_agent import _parse_json_object
+        raw = '```json\n{"k": 1}\n```'
+        assert _parse_json_object(raw) == {"k": 1}
+
+    def test_parse_json_embedded_in_prose(self):
+        """First balanced { } block is extracted from prose (lines 169-181)."""
+        from app.agents.graph_agent import _parse_json_object
+        raw = 'here is the result {"k": "v"} done'
+        assert _parse_json_object(raw) == {"k": "v"}
+
+    def test_parse_json_no_balanced_raises(self):
+        from app.agents.graph_agent import _parse_json_object
+        with pytest.raises(ValueError):
+            _parse_json_object("no json { unbalanced")
+
+    # ── lazy Neo4j driver init (lines 451-462) ──────────────────────────────
+
+    def test_driver_lazy_connect_success(self, monkeypatch):
+        from app.agents.graph_agent import KnowledgeGraphAgent
+        from unittest.mock import patch
+
+        agent = KnowledgeGraphAgent()
+        agent._driver = None  # force the load branch
+        fake_driver = MagicMock()
+        fake_driver.verify_connectivity.return_value = None
+        with patch("neo4j.GraphDatabase", return_value=fake_driver) as mock_db:
+            driver = agent.driver
+        mock_db.assert_called_once()
+        assert driver is fake_driver
+
+    def test_driver_connectivity_failure_raises(self, monkeypatch):
+        from app.agents.graph_agent import KnowledgeGraphAgent
+        from unittest.mock import patch
+
+        agent = KnowledgeGraphAgent()
+        agent._driver = None
+        fake_driver = MagicMock()
+        fake_driver.verify_connectivity.side_effect = RuntimeError("Neo4j down")
+        with patch("neo4j.GraphDatabase", return_value=fake_driver):
+            with pytest.raises(RuntimeError):
+                _ = agent.driver
+
+    # ── parallel-loop exception handler (lines 552-554) ──────────────────────
+
+    def test_extract_and_store_logs_failed_chunk(self, monkeypatch):
+        """A chunk whose extraction raises is logged and skipped
+        (lines 552-554), and the node still returns a list."""
+        from app.agents.graph_agent import KnowledgeGraphAgent
+
+        agent = make_agent_with_mocks()
+        agent._extract_triples_from_text = MagicMock(
+            side_effect=RuntimeError("boom")
+        )
+        chunks = [
+            make_chunk("First chunk with enough words to pass the minimum length."),
+        ]
+        result = agent.extract_and_store_node(make_state(chunks=chunks))
+        assert result["kg_entities"] == []
+
+    # ── BadRequestError retry in _call_extraction_llm (lines 692-703) ───────
+
+    def test_call_extraction_llm_retries_without_response_format(self):
+        """A BadRequestError mentioning response_format falls back to the
+        plain LLM (lines 692-701)."""
+        from openai import BadRequestError
+
+        agent = make_agent_with_mocks()
+        agent.extraction_llm = MagicMock()
+        agent.extraction_llm.invoke.side_effect = BadRequestError(
+            "response_format is not supported"
+        )
+        agent.extraction_llm_plain = MagicMock()
+        agent.extraction_llm_plain.invoke.return_value = MagicMock(
+            content='{"triples": []}'
+        )
+        raw = agent._call_extraction_llm("some text")
+        assert raw == '{"triples": []}'
+        agent.extraction_llm_plain.invoke.assert_called_once()
+
+    def test_call_extraction_llm_reraises_other_bad_request(self):
+        """A BadRequestError without the JSON-mode keywords is re-raised
+        (line 703)."""
+        from openai import BadRequestError
+
+        agent = make_agent_with_mocks()
+        agent.extraction_llm = MagicMock()
+        agent.extraction_llm.invoke.side_effect = BadRequestError("totally unrelated")
+        with pytest.raises(BadRequestError):
+            agent._call_extraction_llm("some text")
+
+    # ── _extract_triples_from_text handlers (lines 735-756) ──────────────────
+
+    def test_extract_triples_json_decode_error_returns_empty(self, monkeypatch):
+        """If the parser raises json.JSONDecodeError, the handler
+        (lines 735-737) returns an empty list."""
+        from app.agents.graph_agent import KnowledgeGraphAgent
+        import json
+        from unittest.mock import patch
+
+        agent = make_agent_with_mocks()
+        with patch(
+            "app.agents.graph_agent._parse_json_object",
+            side_effect=json.JSONDecodeError("bad", "x", 0),
+        ):
+            result = agent._extract_triples_from_text(
+                "Enough words here to pass the minimum length check."
+            )
+        assert result == []
+
+    def test_extract_triples_generic_exception_returns_empty(self):
+        """A non-JSON exception is caught, unwrapped, logged, and
+        degrades to an empty list (lines 738-756)."""
+        from app.agents.graph_agent import KnowledgeGraphAgent
+
+        agent = make_agent_with_mocks()
+        agent.extraction_llm.invoke.side_effect = ValueError("boom")
+        result = agent._extract_triples_from_text(
+            "Enough words here to pass the minimum length check."
+        )
+        assert result == []

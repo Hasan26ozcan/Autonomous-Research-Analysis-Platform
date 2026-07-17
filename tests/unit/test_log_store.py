@@ -117,3 +117,13 @@ def test_log_pipeline_batch_handles_db_error(log_store):
     pool = make_pool(raise_on=RuntimeError("down"))
     with _patch_pool(log_store, pool):
         log_store.log_pipeline_batch("sess1", "single", {"retrieval": 1.0})
+
+
+def test_log_pipeline_batch_noop_when_all_latency_non_numeric(log_store):
+    """A latency dict whose values are all non-numeric yields no rows → early
+    return (line 110) before any SQL is executed."""
+    pool = make_pool()
+    with _patch_pool(log_store, pool):
+        log_store.log_pipeline_batch("sess1", "single", {"a": "n/a", "b": "skip"})
+    rows = [p for sql, p in pool.all_executed if "INSERT INTO pipeline_log" in sql]
+    assert rows == []

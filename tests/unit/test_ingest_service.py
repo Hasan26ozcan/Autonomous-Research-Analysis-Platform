@@ -16,7 +16,7 @@ Three scenarios are covered:
   * exception mid-pipeline → error dict + status/state/log side effects
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -137,3 +137,15 @@ def test_run_ingest_pipeline_handles_enrichment_error(pipeline):
     ]
     assert error_log_calls, "expected an error-level worker log"
     assert "enrich failed" in error_log_calls[0].args[3]
+
+
+def test_notify_bm25_reload_publishes(monkeypatch):
+    """_notify_bm25_reload must publish a reload signal on the Redis channel."""
+    from app.services import ingest_service as svc
+
+    fake_redis = MagicMock()
+    with patch("redis.from_url", return_value=fake_redis) as mock_from_url:
+        svc._notify_bm25_reload()
+
+    mock_from_url.assert_called_once_with(svc.settings.redis_url)
+    fake_redis.publish.assert_called_once_with("arap:bm25:reload", "1")

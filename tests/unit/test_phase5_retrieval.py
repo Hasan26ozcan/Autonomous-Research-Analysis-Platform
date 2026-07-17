@@ -771,3 +771,97 @@ class TestDownstreamCompatibility:
     def test_singleton_is_retrieval_agent_instance(self):
         from app.agents.retrieval_agent import retrieval_agent, RetrievalAgent
         assert isinstance(retrieval_agent, RetrievalAgent)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Extra coverage: lazy cross-encoder load + cache-hit / edge branches
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestRetrievalAgentExtra:
+
+    def test_cross_encoder_lazy_load(self, monkeypatch):
+        """First access of the cross_encoder property loads the model
+        (retrieval_agent.py lines 242-249) when not yet initialized."""
+        from app.agents.retrieval_agent import RetrievalAgent
+        from unittest.mock import patch
+
+        agent = RetrievalAgent()
+        agent._cross_encoder = None  # force the load branch
+        fake_ce = MagicMock()
+        with patch(
+            "app.agents.retrieval_agent.CrossEncoder", return_value=fake_ce
+        ) as mock_ce:
+            ce = agent.cross_encoder
+        mock_ce.assert_called_once()
+        assert ce is fake_ce
+
+    def test_retrieve_cache_hit(self, monkeypatch):
+        """retrieve() returns the Redis-cached chunks and skips the
+        hybrid+rerank pipeline (lines 297-298)."""
+        agent, mocks = make_agent_with_mocks()
+        cached = make_chunks(3)
+        with patch(
+            "app.agents.retrieval_agent.retrieval_cache_get",
+            return_value=cached,
+        ):
+            result = run_retrieve(agent, mocks, make_state())
+        assert result["retrieved_chunks"] == cached
+        assert result["latency_ms"].get("retrieval_cache_hit") == 1
+
+    def test_retrieve_multi_empty_question(self):
+        """retrieve_multi() with no question logs + returns empty update
+        (lines 388-389)."""
+        agent, mocks = make_agent_with_mocks()
+        result = agent.retrieve_multi(make_state(question=""))
+        assert result["retrieved_chunks"] == []
+
+    def test_retrieve_multi_cache_hit(self, monkeypatch):
+        """retrieve_multi() returns cached chunks on a Redis hit
+        (lines 394-395)."""
+        agent, mocks = make_agent_with_mocks()
+        cached = make_chunks(2)
+        with patch(
+            "app.agents.retrieval_agent.retrieval_cache_get",
+            return_value=cached,
+        ):
+            result = agent.retrieve_multi(make_state())
+        assert result["retrieved_chunks"] == cached
+        assert result["latency_ms"].get("retrieval_cache_hit") == 1
+
+    def test_retrieve_multi_paces_subquestions(self, monkeypatch):
+        """When llm_call_min_interval_seconds > 0, retrieve_multi() inserts
+        a pause before each sub-question after the first (line 425)."""
+        from app.core.config import settings
+
+        agent, mocks = make_agent_with_mocks()
+        monkeypatch.setattr(settings, "llm_call_min_interval_seconds", 0.001)
+        agent._decompose_question = MagicMock(
+            return_value=["sub question one", "sub question two"]
+        )
+        agent._full_retrieval_pipeline = MagicMock(return_value=make_chunks(2))
+
+        sleeps = []
+        with patch(
+            "app.agents.retrieval_agent.retrieval_cache_get", return_value=None
+        ), patch(
+            "app.agents.retrieval_agent.time.sleep",
+            side_effect=lambda s: sleeps.append(s),
+        ):
+            result = agent.retrieve_multi(make_state())
+
+        assert len(result["retrieved_chunks"]) >= 1
+        assert len(sleeps) == 1  # one pause after the first sub-question
+        assert all(s == 0.001 for s in sleeps)
+
+    def test_retrieve_multi_no_candidates(self, monkeypatch):
+        """retrieve_multi() with no retrievable candidates after dedup
+        logs + returns empty update (lines 446-447)."""
+        agent, mocks = make_agent_with_mocks()
+        agent._decompose_question = MagicMock(return_value=["only sub question"])
+        agent._full_retrieval_pipeline = MagicMock(return_value=[])
+
+        with patch(
+            "app.agents.retrieval_agent.retrieval_cache_get", return_value=None
+        ):
+            result = agent.retrieve_multi(make_state())
+        assert result["retrieved_chunks"] == []

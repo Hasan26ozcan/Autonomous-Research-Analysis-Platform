@@ -132,6 +132,45 @@ class TestPDFChunker:
         assert "error" in result
         assert result["chunk_count"] == 0
 
+    def test_page_count_raises_without_pymupdf(self, monkeypatch):
+        """page_count() must raise RuntimeError when PyMuPDF is unavailable."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _fake_import(name, *a, **k):
+            if name == "fitz":
+                raise ImportError("No module named 'fitz'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _fake_import)
+        with pytest.raises(RuntimeError, match="PyMuPDF"):
+            self.chunker.page_count(b"fake pdf")
+
+    def test_extract_pages_raises_without_pymupdf(self, monkeypatch):
+        """_extract_pages() must raise RuntimeError when PyMuPDF is unavailable."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _fake_import(name, *a, **k):
+            if name == "fitz":
+                raise ImportError("No module named 'fitz'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _fake_import)
+        with pytest.raises(RuntimeError, match="PyMuPDF"):
+            self.chunker._extract_pages(b"fake pdf")
+
+    def test_chunk_document_returns_empty_when_no_words(self):
+        """chunk() returns [] when no words are extracted (lines 139-140)."""
+        with patch("app.services.chunker.PDFChunker._extract_pages",
+                   return_value=[{"page": 1, "text": "ghost"}]), \
+             patch("app.services.chunker.PDFChunker._build_word_stream",
+                   return_value=[]):
+            result = self.chunker.chunk(b"fake pdf", "test.pdf")
+        assert result == []
+
 
 # =============================================================================
 # Embedder tests
@@ -297,6 +336,22 @@ class TestVectorStore:
         finally:
             vs_module.vector_store = original
 
+    def test_ensure_collection_skips_when_exists(self):
+        """_ensure_collection must not recreate an already-existing collection."""
+        from app.services.vector_store import VectorStore
+
+        store = VectorStore()
+        mock_client = MagicMock()
+        existing = MagicMock()
+        existing.name = store.collection
+        mock_client.get_collections.return_value = MagicMock(collections=[existing])
+        store._client = mock_client
+
+        store._ensure_collection()
+
+        mock_client.create_collection.assert_not_called()
+        mock_client.create_payload_index.assert_not_called()
+
 
 # =============================================================================
 # BM25Index tests
@@ -429,3 +484,26 @@ class TestBM25Index:
             assert fresh_index.size == 2
         finally:
             bm25_module.bm25_index = original
+
+    def test_doc_id_filter_skips_other_documents(self):
+        """Chunks from other documents must be skipped via the filter (line 283).
+
+        The corpus is built so that two documents share the query terms and
+        therefore both score > 0; with a doc_id filter the off-document
+        hit is skipped by the `continue` on line 283 (not by the <= 0 guard).
+        """
+        chunks_a = self._make_chunks(
+            ["machine learning neural networks alpha"], doc_id="doc_a")
+        chunks_b = self._make_chunks(
+            ["machine learning neural networks beta"], doc_id="doc_b")
+        chunks_c = self._make_chunks(
+            ["completely different topic about cooking"], doc_id="doc_c")
+        self.index.add_chunks(chunks_a)
+        self.index.add_chunks(chunks_b)
+        self.index.add_chunks(chunks_c)
+
+        results = self.index.search("neural networks", doc_id="doc_a")
+        assert [r["doc_id"] for r in results] == ["doc_a"]
+        # Without the filter, both doc_a and doc_b rank (doc_b is skipped above).
+        unfiltered = self.index.search("neural networks")
+        assert {r["doc_id"] for r in unfiltered} == {"doc_a", "doc_b"}
