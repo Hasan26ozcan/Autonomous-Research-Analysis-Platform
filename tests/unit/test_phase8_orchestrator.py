@@ -225,14 +225,14 @@ class TestDirectAnswer:
 
 class TestMergeResults:
 
-    def test_returns_empty_dict(self):
-        """merge_results is a no-op convergence point — must return {}."""
+    def test_returns_none(self):
+        """merge_results is a no-op convergence point — must return None."""
         from app.core.orchestrator import merge_results
         result = merge_results({
             "question": "Test?",
             "retrieved_chunks": [{"text": "chunk"}],
         })
-        assert result == {}
+        assert result is None
 
     def test_does_not_modify_state(self):
         from app.core.orchestrator import merge_results
@@ -377,9 +377,9 @@ class TestOrchestratorHealth:
         from app.core.orchestrator import ARAPOrchestrator
         orc = ARAPOrchestrator()
 
-        with patch("app.core.orchestrator.QdrantClient") as MockQdrant, \
-             patch("app.core.orchestrator.GraphDatabase") as MockNeo4j, \
-             patch("app.core.orchestrator.redis_lib") as MockRedis:
+        with patch("qdrant_client.QdrantClient") as MockQdrant, \
+             patch("neo4j.GraphDatabase") as MockNeo4j, \
+             patch("redis.from_url") as MockRedis:
 
             mock_qdrant = MagicMock()
             MockQdrant.return_value = mock_qdrant
@@ -388,7 +388,7 @@ class TestOrchestratorHealth:
             MockNeo4j.driver.return_value = mock_driver
 
             mock_redis = MagicMock()
-            MockRedis.from_url.return_value = mock_redis
+            MockRedis.return_value = mock_redis
 
             status = await orc.health()
 
@@ -401,12 +401,12 @@ class TestOrchestratorHealth:
         from app.core.orchestrator import ARAPOrchestrator
         orc = ARAPOrchestrator()
 
-        with patch("app.core.orchestrator.QdrantClient", side_effect=ConnectionError), \
-             patch("app.core.orchestrator.GraphDatabase") as MockNeo4j, \
-             patch("app.core.orchestrator.redis_lib") as MockRedis:
+        with patch("qdrant_client.QdrantClient", side_effect=ConnectionError), \
+             patch("neo4j.GraphDatabase") as MockNeo4j, \
+             patch("redis.from_url") as MockRedis:
 
             MockNeo4j.driver.side_effect = ConnectionError
-            MockRedis.from_url.side_effect = ConnectionError
+            MockRedis.side_effect = ConnectionError
 
             status = await orc.health()
 
@@ -420,10 +420,10 @@ class TestOrchestratorHealth:
         from app.core.orchestrator import ARAPOrchestrator
         orc = ARAPOrchestrator()
 
-        with patch("app.core.orchestrator.QdrantClient", side_effect=RuntimeError), \
-             patch("app.core.orchestrator.GraphDatabase", side_effect=RuntimeError), \
-             patch("app.core.orchestrator.redis_lib") as MockRedis:
-            MockRedis.from_url.side_effect = RuntimeError
+        with patch("qdrant_client.QdrantClient", side_effect=RuntimeError), \
+             patch("neo4j.GraphDatabase", side_effect=RuntimeError), \
+             patch("redis.from_url") as MockRedis:
+            MockRedis.side_effect = RuntimeError
             result = await orc.health()
 
         assert isinstance(result, dict)
@@ -472,22 +472,20 @@ class TestFastAPIHealth:
 
 
 class TestFastAPIIngest:
-
-    def _mock_orchestrator_ingest(self, result: dict | None = None):
-        default = {"doc_id": "abc123", "chunk_count": 47, "kg_triples": 182}
-        return patch(
-            "app.api.main.orchestrator.ingest",
-            new_callable=lambda: lambda: AsyncMock(return_value=result or default),
-        )
+    """
+    /ingest is asynchronous: it validates the upload, hands the bytes to a
+    Celery task via ingest_document_task.delay(), and returns a task_id
+    immediately (IngestResponse: task_id, status, message). The Celery task
+    is mocked so nothing touches Redis or a real worker.
+    """
 
     @pytest.mark.asyncio
     async def test_rejects_non_pdf_extension(self):
-        with patch("app.api.main.orchestrator"):
-            async with make_async_client() as client:
-                resp = await client.post(
-                    "/ingest",
-                    files={"file": ("document.txt", b"text content", "text/plain")},
-                )
+        async with make_async_client() as client:
+            resp = await client.post(
+                "/ingest",
+                files={"file": ("document.txt", b"text content", "text/plain")},
+            )
         assert resp.status_code == 400
         assert "PDF" in resp.json()["detail"]
 
@@ -495,18 +493,19 @@ class TestFastAPIIngest:
     async def test_rejects_oversized_file(self):
         """Files over 50MB must return 413."""
         large_content = b"A" * (51 * 1024 * 1024)
-        with patch("app.api.main.orchestrator"):
-            async with make_async_client() as client:
-                resp = await client.post(
-                    "/ingest",
-                    files={"file": ("big.pdf", large_content, "application/pdf")},
-                )
+        async with make_async_client() as client:
+            resp = await client.post(
+                "/ingest",
+                files={"file": ("big.pdf", large_content, "application/pdf")},
+            )
         assert resp.status_code == 413
 
     @pytest.mark.asyncio
     async def test_valid_pdf_returns_200_with_correct_schema(self):
-        with patch("app.api.main.orchestrator.ingest",
-                   new=AsyncMock(return_value={"doc_id": "abc", "chunk_count": 42, "kg_triples": 10})):
+        mock_task = MagicMock()
+        mock_task.id = "task-abc-123"
+        with patch("app.api.main.ingest_document_task.delay",
+                   return_value=mock_task) as mock_delay:
             async with make_async_client() as client:
                 resp = await client.post(
                     "/ingest",
@@ -514,16 +513,18 @@ class TestFastAPIIngest:
                 )
         assert resp.status_code == 200
         body = resp.json()
-        assert "doc_id" in body
-        assert "chunk_count" in body
-        assert "kg_triples" in body
-        assert "filename" in body
+        # Async ingest returns a queued-task envelope, not pipeline results.
+        assert body["task_id"] == "task-abc-123"
+        assert body["status"] == "queued"
         assert "message" in body
+        mock_delay.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_ingest_returns_500_on_pipeline_error(self):
-        with patch("app.api.main.orchestrator.ingest",
-                   new=AsyncMock(side_effect=RuntimeError("Qdrant down"))):
+        # If enqueueing the Celery task fails (e.g. broker unreachable),
+        # the endpoint surfaces a 500 rather than silently dropping the upload.
+        with patch("app.api.main.ingest_document_task.delay",
+                   side_effect=RuntimeError("broker down")):
             async with make_async_client() as client:
                 resp = await client.post(
                     "/ingest",

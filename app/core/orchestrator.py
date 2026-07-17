@@ -91,11 +91,11 @@ import os
 from typing import AsyncIterator
 
 from langgraph.graph import StateGraph, END
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.core.config import settings
 from app.core.state import AgentState
+from app.services.llm_client import make_llm
 
 # ── Phase 4: Adaptive Router ───────────────────────────────────────────────────
 from app.agents.router import router_agent
@@ -173,10 +173,8 @@ def direct_answer(state: AgentState) -> dict:
         judge_passed        (bool)  True (skip judge — nothing to ground-check)
         draft_answer        (str)   same as answer (no judging step)
     """
-    llm = ChatOpenAI(
+    llm = make_llm(
         model=settings.router_model,
-        api_key=settings.openai_api_key,
-        base_url=settings.llm_base_url,
         temperature=0.1,
     )
 
@@ -216,19 +214,26 @@ def direct_answer(state: AgentState) -> dict:
     }
 
 
-def merge_results(state: AgentState) -> dict:
+def merge_results(state: AgentState) -> dict | None:
     """
     LangGraph node: convergence point for all retrieval branches.
 
     All three retrieval routes (retrieve, retrieve_multi, graph_retrieve)
     connect to this node before passing to generate(). This node is
-    currently a no-op pass-through (returns empty dict = no state changes),
-    but it serves as a clean architectural convergence point.
+    currently a no-op pass-through (no state changes), but it serves as a
+    clean architectural convergence point.
 
     Future enhancement: deduplicate retrieved_chunks if the graph and
     retrieval agents returned overlapping chunks.
 
-    Returns {} — LangGraph merges an empty dict without modifying state.
+    IMPORTANT — do NOT return {} here:
+      In LangGraph 0.2.x, returning an empty dict {} from a node raises
+      InvalidUpdateError ("Expected node session_id to update at least one
+      of [...], got {}"). This is because the empty dict vacuously satisfies
+      "none of the returned keys are valid state channels". The correct
+      no-op for a node that intentionally changes nothing is to return None,
+      which LangGraph translates to SKIP_WRITE for every channel (state left
+      unchanged). Return {} will crash the whole query graph.
     """
     return None
 
@@ -502,12 +507,20 @@ class ARAPOrchestrator:
         }
 
         # Best-effort audit log - never blocks or fails the response.
-        from app.services.postgres_store import record_document
-        await record_document(
+        # These are synchronous (psycopg2) and best-effort.
+        from app.services.postgres_store import (
+            record_document,
+            record_chunk_metadata,
+            update_document_status,
+        )
+        update_document_status(result["doc_id"], "processing")
+        record_chunk_metadata(result["doc_id"], final_state.get("chunks") or [])
+        record_document(
             doc_id=result["doc_id"],
             filename=filename,
             chunk_count=result["chunk_count"],
             kg_triples=result["kg_triples"],
+            status="ready",
         )
 
         return result
@@ -557,6 +570,14 @@ class ARAPOrchestrator:
             "latency_ms":  {},
         }
 
+        # Phase 9: reset the process-wide token counter so the count returned
+        # at the end reflects only THIS query's LLM calls.
+        from app.services.llm_client import (
+            reset_token_usage,
+            get_and_reset_token_usage,
+        )
+        reset_token_usage()
+
         # LangGraph thread_id = session_id → Redis checkpoint key
         config = {"configurable": {"thread_id": session_id}}
 
@@ -566,17 +587,32 @@ class ARAPOrchestrator:
             config,
         )
 
+        token_usage = get_and_reset_token_usage()
+
+        # Phase 10: log per-node latency to pipeline_log (best-effort).
+        try:
+            from app.services.log_store import log_pipeline_batch
+            log_pipeline_batch(
+                session_id,
+                final_state.get("query_type"),
+                final_state.get("latency_ms") or {},
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("pipeline log failed (non-fatal): %s", e)
+
         result = {
             "answer":             final_state.get("answer", ""),
             "sources":            final_state.get("sources") or [],
             "query_type":         final_state.get("query_type"),
             "faithfulness_score": final_state.get("faithfulness_score"),
             "latency_ms":         final_state.get("latency_ms") or {},
+            "token_usage":        token_usage,
         }
 
         # Best-effort audit log - never blocks or fails the response.
+        # Synchronous (psycopg2) and best-effort.
         from app.services.postgres_store import record_query
-        await record_query(
+        record_query(
             session_id=session_id,
             user_id=user_id,
             doc_id=doc_id,

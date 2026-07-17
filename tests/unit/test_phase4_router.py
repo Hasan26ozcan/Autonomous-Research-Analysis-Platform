@@ -461,15 +461,36 @@ class TestFetchMemories:
         assert all(m["memory"] for m in memories)
 
     def test_mem0_search_called_with_user_id(self):
-        """Mem0 must be searched with the correct user_id for isolation."""
+        """Mem0 must be searched scoped to the user via `filters` (mem0 2.x)."""
         from app.agents.router import RouterAgent
         agent = RouterAgent()
         agent._mem0_client = MagicMock()
-        agent._mem0_client.search.return_value = []
+        agent._mem0_client.search.return_value = {"results": []}
         agent._fetch_memories("What is X?", "user_abc")
         agent._mem0_client.search.assert_called_once()
         call_kwargs = agent._mem0_client.search.call_args.kwargs
-        assert call_kwargs.get("user_id") == "user_abc"
+        # mem0 2.x scopes by `filters={"user_id": ...}` and counts via `top_k`.
+        assert call_kwargs.get("filters") == {"user_id": "user_abc"}
+        assert call_kwargs.get("top_k") == 5
+
+    def test_unwraps_results_envelope(self):
+        """
+        Regression guard for BUG 1: mem0 2.x search() returns
+        {"results": [...]} (a dict), not a bare list. We must unwrap it
+        or the iteration silently yields nothing (memories always empty).
+        """
+        from app.agents.router import RouterAgent
+        agent = RouterAgent()
+        agent._mem0_client = MagicMock()
+        agent._mem0_client.search.return_value = {"results": [
+            {"memory": "Envelope-wrapped memory.", "score": 0.88},
+            {"memory": "Second fact.", "score": 0.71},
+        ]}
+        memories = agent._fetch_memories("question", "user_1")
+        assert len(memories) == 2
+        assert memories[0]["memory"] == "Envelope-wrapped memory."
+        assert memories[0]["score"] == 0.88
+        assert memories[1]["memory"] == "Second fact."
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

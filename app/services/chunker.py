@@ -156,6 +156,20 @@ class PDFChunker:
         """Return the stable doc_id for a PDF without full chunking."""
         return hashlib.sha256(pdf_bytes).hexdigest()[:16]
 
+    def page_count(self, pdf_bytes: bytes) -> int:
+        """
+        Return the total number of pages in the PDF.
+
+        Used by the ingest pipeline to populate documents.total_pages
+        (Phase 1 metadata). Returns 0 if the PDF cannot be opened.
+        """
+        try:
+            import fitz  # PyMuPDF
+        except ImportError:
+            raise RuntimeError("PyMuPDF not installed. Run: pip install pymupdf")
+        with fitz.open(stream=io.BytesIO(pdf_bytes), filetype="pdf") as doc:
+            return doc.page_count
+
     # ── Private: PDF text extraction ───────────────────────────────────────────
 
     def _extract_pages(self, pdf_bytes: bytes) -> list[dict]:
@@ -368,3 +382,14 @@ def chunk_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         pdf_bytes = f.read()
     filename = os.path.basename(pdf_path)
     return _chunker.chunk(pdf_bytes, filename=filename)
+
+
+def pdf_page_count(pdf_path: str) -> int:
+    """
+    Convenience wrapper: total page count of a PDF on disk.
+
+    Used by `ingest_service.py` to populate documents.total_pages (Phase 1).
+    """
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+    return _chunker.page_count(pdf_bytes)

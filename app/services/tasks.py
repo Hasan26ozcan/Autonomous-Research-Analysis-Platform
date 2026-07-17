@@ -1,6 +1,13 @@
 from celery import shared_task
+from app.core.celery_app import celery_app
 from app.services.ingest_service import run_ingest_pipeline
 from app.core.logging import logger
+
+
+@celery_app.task(name="app.services.tasks.ping")
+def ping() -> str:
+    """Lightweight health-check task; echoes 'pong'."""
+    return "pong"
 
 @shared_task(bind=True, max_retries=2, soft_time_limit=1800, time_limit=1860)
 def ingest_document_task(self, file_content: bytes, filename: str, user_id: str = "default"):

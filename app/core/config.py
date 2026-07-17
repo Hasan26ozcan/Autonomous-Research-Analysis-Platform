@@ -51,21 +51,43 @@ class Settings(BaseSettings):
         ),
     )
     llm_rpm_limit: int = Field(
-        default=25,
+        default=30,
         description=(
             "Requests-per-minute budget used by the proactive rate limiter "
             "(app/services/rate_limiter.py) shared by every LLM call site. "
-            "Kept a bit under Groq's typical free-tier 30 RPM cap for safety "
-            "margin. Raise this if using a provider/plan with higher limits."
+            "Aligned with Groq's typical free-tier 30 RPM cap. Raise this if "
+            "using a provider/plan with higher limits. NOTE: behavior is "
+            "ultimately bounded by the provider's API — see llm_max_retries "
+            "for the reactive safety net when a 429 slips past this cap."
         ),
     )
     llm_tpm_limit: int = Field(
-        default=5000,
+        default=6000,
         description=(
             "Tokens-per-minute budget used by the proactive rate limiter. "
-            "Kept a bit under Groq's typical free-tier 6,000-8,000 TPM cap "
-            "for safety margin. Raise this if using a provider/plan with "
-            "higher limits (e.g. real OpenAI, which is far more generous)."
+            "Aligned with Groq's typical free-tier 6,000 TPM cap. Raise this "
+            "if using a provider/plan with higher limits (e.g. real OpenAI)."
+        ),
+    )
+    llm_request_timeout: int = Field(
+        default=60,
+        description=(
+            "Per-LLM-call timeout (seconds) applied to every ChatOpenAI client "
+            "via the shared make_llm() factory. Raised from the earlier 30s so "
+            "slow Groq responses (common under free-tier load) don't abort a "
+            "call prematurely. The OpenAI SDK also retries timeouts/429s."
+        ),
+    )
+    llm_max_retries: int = Field(
+        default=3,
+        description=(
+            "Reactive retry count applied to every ChatOpenAI client via "
+            "make_llm(). The OpenAI SDK retries HTTP 429 (RateLimit) and "
+            "timeouts with exponential backoff that honors the server's "
+            "Retry-After header — so transient Groq 429s are recovered "
+            "automatically instead of failing the chunk/call. (Earlier code "
+            "used max_retries=0 to 'fail fast' on IP-bans; the proactive rate "
+            "limiter + this bounded retry is the better balance.)"
         ),
     )
     llm_model: str = Field(default="gpt-4o", description="Primary generation model")
@@ -124,8 +146,32 @@ class Settings(BaseSettings):
     # ── Redis ─────────────────────────────────────────────────────────────────
     # Role 1: LangGraph checkpointer — persists conversation state across requests
     # Role 2: Celery broker — async ingestion task queue
+    # Role 3: Retrieval cache (retrieval:<hash> → top-k chunks)
+    # Role 4: LLM response cache (llm:<hash> → generated text)
+    # Role 5: Temp pipeline state (processing:<doc_id> ingest in-flight flag)
     redis_url: str = Field(default="redis://localhost:6379/0")
     session_ttl_seconds: int = Field(default=3600)
+    retrieval_cache_ttl_seconds: int = Field(
+        default=3600,
+        description=(
+            "TTL for cached retrieval results (retrieval:<hash>). 1h keeps "
+            "answers fresh while still cutting repeat hybrid+rerank cost."
+        ),
+    )
+    llm_cache_ttl_seconds: int = Field(
+        default=86400,
+        description=(
+            "TTL for cached LLM responses (llm:<hash>). 24h — deterministic "
+            "structured calls (routing, HyDE, KG extraction) benefit most."
+        ),
+    )
+    pipeline_state_ttl_seconds: int = Field(
+        default=1800,
+        description=(
+            "TTL for the processing:<doc_id> flag set during ingest so a "
+            "second concurrent upload of the same file is detectable."
+        ),
+    )
 
     # ── PostgreSQL ────────────────────────────────────────────────────────────
     # Document metadata + query history (doubles as RAGAS evaluation test set)

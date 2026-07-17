@@ -64,22 +64,27 @@ SEED_QA: list[dict[str, str]] = [
 async def _load_test_set(limit: int = 20, include_seed: bool = True) -> list[dict[str, str]]:
     """Load real Q/A pairs from PostgreSQL query_history when possible."""
     try:
-        import asyncpg
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
 
         from app.core.config import settings
 
-        conn = await asyncpg.connect(settings.postgres_url)
-        rows = await conn.fetch(
-            """
-            SELECT question, answer
-            FROM query_history
-            WHERE answer IS NOT NULL AND LENGTH(answer) > 20
-            ORDER BY created_at DESC
-            LIMIT $1
-            """,
-            limit,
-        )
-        await conn.close()
+        conn = psycopg2.connect(settings.postgres_url, connect_timeout=5)
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT question, answer
+                    FROM query_history
+                    WHERE answer IS NOT NULL AND LENGTH(answer) > 20
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                rows = cur.fetchall()
+        finally:
+            conn.close()
         if rows:
             return [
                 {"question": str(r["question"]), "ground_truth": str(r["answer"])}
@@ -110,10 +115,12 @@ async def _run_single_query(orchestrator: Any, item: dict[str, str]) -> dict[str
             "question": item["question"],
             "answer": "",
             "contexts": [],
+            "sources": [],
             "ground_truth": item.get("ground_truth", ""),
             "query_type": None,
             "faithfulness_score": None,
             "latency_ms": {},
+            "token_usage": {},
             "error": str(exc),
         }
 
@@ -128,10 +135,12 @@ async def _run_single_query(orchestrator: Any, item: dict[str, str]) -> dict[str
         "question": item["question"],
         "answer": result.get("answer") or "",
         "contexts": contexts,
+        "sources": sources,  # full source dicts (doc_id, chunk_index, ...) for Phase 9
         "ground_truth": item.get("ground_truth", ""),
         "query_type": result.get("query_type"),
         "faithfulness_score": result.get("faithfulness_score"),
         "latency_ms": result.get("latency_ms") or {},
+        "token_usage": result.get("token_usage") or {},
         "error": None,
     }
 
@@ -195,6 +204,7 @@ async def run_ragas_evaluation(
         }
         if save_path:
             _write_report(report, save_path)
+        await _persist_eval_run(report, processed)
         return report
 
     dataset = Dataset.from_dict(
@@ -227,6 +237,7 @@ async def run_ragas_evaluation(
         }
         if save_path:
             _write_report(report, save_path)
+        await _persist_eval_run(report, processed)
         return report
 
     report = {
@@ -252,6 +263,7 @@ async def run_ragas_evaluation(
     if save_path:
         _write_report(report, save_path)
 
+    await _persist_eval_run(report, processed)
     logger.info("RAGAS report: %s", report)
     return report
 
@@ -320,6 +332,59 @@ def _write_report(report: dict[str, Any], save_path: str | None) -> None:
     path = Path(save_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+async def _persist_eval_run(report: dict[str, Any], processed: list[dict[str, Any]]) -> None:
+    """
+    Phase 9 — persist an evaluation report (and its retrieval results) to Postgres.
+
+    Best-effort: any Postgres failure is logged and swallowed so evaluation
+    still returns its in-memory report. No-op if Postgres was unavailable.
+    """
+    try:
+        from app.services.eval_store import (
+            start_run,
+            finish_run,
+            record_retrieval_results,
+        )
+
+        run_id = start_run(len(processed))
+        if run_id is None:
+            return
+
+        # Aggregate token usage across all processed questions.
+        tot = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        for rec in processed:
+            tu = rec.get("token_usage") or {}
+            tot["prompt_tokens"] += int(tu.get("prompt_tokens", 0) or 0)
+            tot["completion_tokens"] += int(tu.get("completion_tokens", 0) or 0)
+            tot["total_tokens"] += int(tu.get("total_tokens", 0) or 0)
+
+        finish_run(
+            run_id,
+            status=report.get("status", "unknown"),
+            metrics=report.get("metrics", {}),
+            token_usage=tot,
+            average_faithfulness=(report.get("summary") or {}).get("average_faithfulness"),
+            notes=report.get("error"),
+        )
+
+        # One retrieval_results row per retrieved chunk observed this run.
+        items: list[dict[str, Any]] = []
+        for rec in processed:
+            for s in (rec.get("sources") or []):
+                if not isinstance(s, dict):
+                    continue
+                items.append({
+                    "question": rec.get("question", ""),
+                    "doc_id": s.get("doc_id", ""),
+                    "chunk_index": s.get("chunk_index", 0),
+                    "score": s.get("rerank_score") or 0.0,
+                    "source": s.get("source", ""),
+                })
+        record_retrieval_results(run_id, items)
+    except Exception as exc:  # pragma: no cover - depends on Postgres
+        logger.warning("Evaluation persistence failed (non-fatal): %s", exc)
 
 
 def build_argument_parser() -> argparse.ArgumentParser:

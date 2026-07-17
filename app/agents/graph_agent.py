@@ -105,8 +105,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
+from openai import BadRequestError
+from app.services.llm_client import make_llm
 from pydantic import BaseModel, Field, field_validator
 from tenacity import (
     retry,
@@ -126,6 +127,60 @@ from app.core.config import settings
 from app.core.state import AgentState
 
 logger = logging.getLogger(__name__)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ROBUST JSON EXTRACTION
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Even in JSON mode, models (especially reasoning models, or providers
+# without strict structured-output support) may wrap the JSON in markdown
+# fences or prepend/append prose. This extracts the FIRST balanced JSON
+# object regardless of surrounding text. Used by both triple extraction
+# and query-entity extraction.
+
+def _parse_json_object(raw: str) -> dict:
+    """
+    Extract the first balanced JSON object from an LLM response.
+
+    Handles: pure JSON, ```json ... ``` fences, and leading/trailing prose.
+    Raises ValueError if no parseable JSON object is found (callers catch
+    this and degrade gracefully).
+    """
+    if not raw or not raw.strip():
+        raise ValueError("empty model output")
+
+    text = raw.strip()
+
+    # Strip a single markdown code fence (```json ... ``` or ``` ... ```)
+    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, re.DOTALL)
+    if fenced:
+        text = fenced.group(1).strip()
+
+    # Fast path: the whole (de-fenced) string is already valid JSON
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Otherwise find the first balanced { ... } block
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("no JSON object found in model output")
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = text[start:i + 1]
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError:
+                    break
+
+    raise ValueError("could not parse a JSON object from model output")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -327,41 +382,27 @@ class KnowledgeGraphAgent:
         # Groq's "json_schema" strict mode constrains the model to an exact
         # schema and is documented as far more reliable for structured
         # extraction: https://console.groq.com/docs/structured-outputs
-        self.extraction_llm = ChatOpenAI(
-            model=settings.llm_model,   # bigger model than router_model - small
-            # models are noticeably less reliable at strict JSON schema
-            # compliance, which was a large share of the remaining 400s.
-            api_key=settings.openai_api_key,
-            base_url=settings.llm_base_url,
+        self.extraction_llm = make_llm(
+            # COST OPTIMIZATION: use router_model (gpt-4o-mini) instead of the
+            # expensive llm_model (gpt-4o) for structured triple extraction.
+            # This is 1 LLM call per ingested chunk (and also powers query-time
+            # entity extraction), so the saving is large. json_object mode plus
+            # the robust _parse_json_object() fallback make the small model
+            # reliable enough here; per-chunk failures already degrade
+            # gracefully (the chunk is skipped, not the whole ingest).
+            model=settings.router_model,
             temperature=0.0,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "triple_extraction_result",
-                    "strict": True,
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "triples": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "head": {"type": "string"},
-                                        "relation": {"type": "string"},
-                                        "tail": {"type": "string"},
-                                        "confidence": {"type": "number"},
-                                    },
-                                    "required": ["head", "relation", "tail", "confidence"],
-                                    "additionalProperties": False,
-                                },
-                            },
-                        },
-                        "required": ["triples"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
+            # NOTE: previously used response_format={"type": "json_schema"}.
+            # Groq's llama-3.3-70b-versatile (and most non-OpenAI models) does
+            # NOT support the strict "json_schema" structured-outputs mode and
+            # rejects it with HTTP 400 ("This model does not support response
+            # format json_schema"). JSON *mode* ("json_object") IS supported by
+            # these models, so we use that and parse the output robustly via
+            # _parse_json_object() (which strips markdown fences / stray prose
+            # and extracts the first balanced JSON object). If a provider
+            # rejects even json_object mode, _call_extraction_llm() falls back to
+            # a request without response_format and still parses the result.
+            response_format={"type": "json_object"},
             max_tokens=2000,   # bumped from 1200 - saw LengthFinishReasonError
             # with completion_tokens=1200 hitting the old limit exactly on
             # some chunks, truncating valid JSON mid-way.
@@ -370,13 +411,22 @@ class KnowledgeGraphAgent:
             # json_schema mode caused a client-side TypeError instead of the
             # earlier 400 - reverted. max_tokens alone (raised from 600) gives
             # enough room for both reasoning and the JSON output.
+            use_cache=True,   # Phase 5: triple extraction is deterministic per text
         )
-        self.cypher_llm = ChatOpenAI(
+        # Fallback client WITHOUT response_format. Some providers/models reject
+        # even json_object mode; when that happens we drop the constraint and
+        # rely on the prompt + _parse_json_object() to recover the JSON.
+        self.extraction_llm_plain = make_llm(
             model=settings.router_model,
-            api_key=settings.openai_api_key,
-            base_url=settings.llm_base_url,
+            temperature=0.0,
+            max_tokens=2000,
+            use_cache=True,
+        )
+        self.cypher_llm = make_llm(
+            model=settings.router_model,
             temperature=0.0,
             max_tokens=250,    # Cypher queries are short
+            use_cache=True,   # Phase 5: Cypher generation is deterministic per question
             # NOTE: no response_format here — Cypher is not JSON, it's a query string
         )
         self._driver = None   # lazy Neo4j driver
@@ -613,10 +663,11 @@ class KnowledgeGraphAgent:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     @retry(
-        stop=stop_after_attempt(4),   # was 2 - JSON-validation 400s are often
-        # transient (model got unlucky on that generation), more attempts
-        # meaningfully reduces how often a chunk ends up with zero triples.
-        wait=wait_exponential(multiplier=1, min=1, max=6),
+        stop=stop_after_attempt(2),   # fail fast: with request_timeout=30 and
+        # max_retries=0 on the client, a dead/unreachable backend raises quickly
+        # and the chunk is skipped gracefully. Avoids the multi-minute stalls
+        # seen when Groq was IP-banned (rate limiter + retries compounded).
+        wait=wait_exponential(multiplier=1, min=1, max=4),
         retry=retry_if_exception_type(Exception),
         reraise=False,   # caller handles None/failure gracefully
     )
@@ -631,10 +682,25 @@ class KnowledgeGraphAgent:
         groq_rate_limiter.acquire(estimate_tokens(
             TRIPLE_EXTRACTION_SYSTEM, truncated, max_output_tokens=2000,
         ))
-        response = self.extraction_llm.invoke([
+        messages = [
             SystemMessage(content=TRIPLE_EXTRACTION_SYSTEM),
             HumanMessage(content=f"Text:\n{truncated}"),
-        ])
+        ]
+        try:
+            response = self.extraction_llm.invoke(messages)
+        except BadRequestError as e:
+            msg = str(e).lower()
+            if "response_format" in msg or "json" in msg or "schema" in msg:
+                # Provider/model does not support JSON mode — drop the
+                # constraint and let _parse_json_object() recover the JSON
+                # from the raw (possibly fenced/prose-wrapped) output.
+                logger.warning(
+                    "KG extraction: JSON mode rejected by model, retrying "
+                    "without response_format: %s", str(e)[:120],
+                )
+                response = self.extraction_llm_plain.invoke(messages)
+            else:
+                raise
         return response.content
 
     def _extract_triples_from_text(self, text: str) -> list[Triple]:
@@ -663,7 +729,7 @@ class KnowledgeGraphAgent:
 
         try:
             raw_json = self._call_extraction_llm(text)
-            parsed = json.loads(raw_json)
+            parsed = _parse_json_object(raw_json)
             result = TripleExtractionResult(**parsed)
             return result.triples
         except json.JSONDecodeError as e:
@@ -810,7 +876,7 @@ class KnowledgeGraphAgent:
                 SystemMessage(content=QUERY_ENTITY_EXTRACTION_SYSTEM),
                 HumanMessage(content=f"Question: {question}"),
             ])
-            parsed = json.loads(response.content)
+            parsed = _parse_json_object(response.content)
             result = EntityExtractionResult(**parsed)
             return result.entities
         except Exception as e:

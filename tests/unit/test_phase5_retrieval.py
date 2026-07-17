@@ -221,7 +221,11 @@ class TestDecomposeQuestion:
     def test_parses_newline_separated_output(self):
         self.agent.llm = MagicMock()
         self.agent.llm.invoke.return_value = MagicMock(
-            content="What preprocessing steps are used?\nWhat limitations exist?\nHow do they relate?"
+            content=(
+                "What preprocessing steps are used in the pipeline?\n"
+                "What limitations does the current approach have?\n"
+                "How do these limitations relate to the preprocessing step?"
+            )
         )
         result = self.agent._decompose_question("How does preprocessing address limitations?")
         assert len(result) == 3

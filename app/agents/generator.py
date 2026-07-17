@@ -110,11 +110,12 @@ import re
 import time
 from typing import TYPE_CHECKING
 
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from sentence_transformers import CrossEncoder
 
 from app.core.config import settings
+from app.services.llm_client import make_llm
+from app.services.postgres_store import record_conversation
 # NOTE: must be a real (non-TYPE_CHECKING) import - see graph_agent.py note.
 # generate()/judge()/should_retry() use `state: "AgentState"` as a
 # runtime-resolved string annotation (LangGraph calls typing.get_type_hints()
@@ -204,11 +205,8 @@ class AnswerGenerator:
     """
 
     def __init__(self):
-        self.llm = ChatOpenAI(
+        self.llm = make_llm(
             model=settings.llm_model,
-            api_key=settings.openai_api_key,
-            base_url=settings.llm_base_url,
-            temperature=settings.temperature,
             max_tokens=settings.max_tokens,
         )
         self._nli_model: CrossEncoder | None = None
@@ -282,7 +280,10 @@ class AnswerGenerator:
                         },
                         "embedder": {
                             "provider": "huggingface",
-                            "config": {"model": settings.embedding_model},
+                            "config": {
+                                "model": settings.embedding_model,
+                                "embedding_dims": settings.embedding_dim,
+                            },
                         },
                         "llm": {
                             "provider": "openai",
@@ -602,7 +603,7 @@ class AnswerGenerator:
     # LangGraph Node 3: store_memory()
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def store_memory(self, state: "AgentState") -> dict:
+    def store_memory(self, state: "AgentState") -> dict | None:
         """
         LangGraph node: persist the approved Q&A turn to Mem0.
 
@@ -668,7 +669,21 @@ class AnswerGenerator:
                 user_id, str(e)[:120],
             )
 
-        return None   # no state fields modified
+        # Phase 8: persist the Q&A turn as conversation metadata in Postgres
+        # (Conversation metadata → PostgreSQL). Best-effort; never blocks.
+        # record_conversation is synchronous (psycopg2) and safe to call from
+        # this worker-thread context.
+        try:
+            record_conversation(
+                state.get("session_id", ""), user_id, question, answer,
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("store_memory(): record_conversation failed (non-fatal): %s", e)
+
+        # Pure side-effect node: no state fields are modified, so return None
+        # (the LangGraph no-op). Returning {} here raises InvalidUpdateError
+        # in LangGraph 0.2.x — see merge_results() for the rationale.
+        return None
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # Private: Context Window Assembly

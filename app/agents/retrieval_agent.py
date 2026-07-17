@@ -113,9 +113,9 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from sentence_transformers import CrossEncoder
+from app.services.llm_client import make_llm
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -127,6 +127,7 @@ from app.core.config import settings
 from app.services.embedder import embedder
 from app.services.vector_store import vector_store
 from app.services.bm25_index import bm25_index
+from app.services.redis_cache import retrieval_cache_get, retrieval_cache_set
 # NOTE: must be a real (non-TYPE_CHECKING) import - see graph_agent.py note.
 # retrieve()/retrieve_multi() use `state: "AgentState"` as a runtime-resolved
 # string annotation (LangGraph calls typing.get_type_hints() on node
@@ -212,12 +213,11 @@ class RetrievalAgent:
         # Use router_model (gpt-4o-mini) for HyDE + decomposition.
         # These are structured generation tasks — cheaper model is sufficient.
         # We save llm_model (gpt-4o) for final answer generation in Phase 7.
-        self.llm = ChatOpenAI(
+        self.llm = make_llm(
             model=settings.router_model,
-            api_key=settings.openai_api_key,
-            base_url=settings.llm_base_url,
             temperature=0.0,    # deterministic HyDE and decomposition
             max_tokens=300,     # 3-5 sentence HyDE passage fits in 300 tokens
+            use_cache=True,     # Phase 5: HyDE/decompose are deterministic → cache
         )
         self._cross_encoder: CrossEncoder | None = None  # lazy-loaded
 
@@ -290,6 +290,22 @@ class RetrievalAgent:
             logger.error("retrieve() called with empty question")
             return self._empty_update(state, t0, node_key="retrieval")
 
+        # Phase 5: retrieval cache check (Redis). On a hit, return the cached
+        # top-k chunks and skip hybrid search + cross-encoder rerank entirely.
+        cached = retrieval_cache_get(question, doc_id)
+        if cached:
+            logger.info("retrieve(): Redis cache HIT — skipping hybrid+rerank")
+            return {
+                "retrieved_chunks": cached,
+                "retrieval_score":  _avg_rerank_score(cached),
+                "rewritten_query":  question,
+                "latency_ms": {
+                    **(state.get("latency_ms") or {}),
+                    "retrieval": 0.0,
+                    "retrieval_cache_hit": 1,
+                },
+            }
+
         # Layer 1: HyDE rewrite
         hyde_passage = self._hyde_rewrite(question)
 
@@ -306,6 +322,9 @@ class RetrievalAgent:
             "retrieve(): %d chunks in %.0fms | question='%s...'",
             len(chunks), elapsed_ms, question[:50],
         )
+
+        # Phase 5: cache the freshly retrieved chunks for this question.
+        retrieval_cache_set(question, doc_id, chunks)
 
         return {
             "retrieved_chunks": chunks,
@@ -369,6 +388,22 @@ class RetrievalAgent:
             logger.error("retrieve_multi() called with empty question")
             return self._empty_update(state, t0, node_key="retrieval_multi")
 
+        # Phase 5: retrieval cache check (Redis), keyed by the original question.
+        cached = retrieval_cache_get(question, doc_id)
+        if cached:
+            logger.info("retrieve_multi(): Redis cache HIT — skipping hybrid+rerank")
+            return {
+                "retrieved_chunks": cached,
+                "retrieval_score":  _avg_rerank_score(cached),
+                "sub_questions":    [],
+                "rewritten_query":  question,
+                "latency_ms": {
+                    **(state.get("latency_ms") or {}),
+                    "retrieval_multi": 0.0,
+                    "retrieval_cache_hit": 1,
+                },
+            }
+
         # Step 1: Decompose into sub-questions
         sub_questions = self._decompose_question(question)
         logger.info(
@@ -424,6 +459,9 @@ class RetrievalAgent:
             "retrieve_multi(): %d candidates → %d final chunks in %.0fms",
             len(all_candidates), len(final_chunks), elapsed_ms,
         )
+
+        # Phase 5: cache the merged, reranked chunks for this question.
+        retrieval_cache_set(question, doc_id, final_chunks)
 
         return {
             "retrieved_chunks": final_chunks,

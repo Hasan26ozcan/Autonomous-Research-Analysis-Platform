@@ -52,7 +52,22 @@ services:
     container_name: arap-worker
     # ✅ Remove root privileges (fixes security warning)
     user: "1000:1000"
+    # ✅ The container runs as uid 1000, which is NOT in /etc/passwd.
+    #    `sentence_transformers.CrossEncoder` -> `torch` -> `getpass.getuser()`
+    #    raises "KeyError: getpwuid(): uid not found: 1000" at import time.
+    #    `getpass.getuser()` honours USER/LOGNAME env vars before /etc/passwd,
+    #    so pinning them lets the worker boot without rebuilding the image.
     environment:
+      - USER=appuser
+      - LOGNAME=appuser
+      # ✅ Point $HOME at /app (owned by uid 1000) so any "~"-based
+      #    path (torch inductor cache, etc.) is writable by the worker.
+      - HOME=/app
+      # ✅ HF/transformers caches must live under /app (owned by uid 1000),
+      #    not /root (root-only) which the worker cannot write to.
+      - HF_HOME=/app/.hf_cache
+      - TRANSFORMERS_CACHE=/app/.hf_cache
+      - SENTENCE_TRANSFORMERS_HOME=/app/.hf_cache
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - LLM_BASE_URL=${LLM_BASE_URL:-}
       - LLM_MODEL=${LLM_MODEL:-gpt-4o}
@@ -80,7 +95,7 @@ services:
         condition: service_healthy
     volumes:
       - ./:/app
-      - hf_cache:/root/.cache/huggingface
+      - ./hf_cache:/app/.hf_cache
     # ✅ Start via app.core.celery_app (not app/services/tasks)
     command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2
     restart: unless-stopped

@@ -99,8 +99,8 @@ import re
 import time
 from typing import TYPE_CHECKING
 
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
+from app.services.llm_client import make_llm
 from pydantic import BaseModel, Field, field_validator
 from tenacity import (
     retry,
@@ -112,7 +112,7 @@ from tenacity import (
 from app.core.config import settings
 from app.core.state import QueryType
 from app.core.state import AgentState
-from app.services.embedder import embedder   # <-- NEW: singleton embedder
+from app.services.postgres_store import record_memory
 
 logger = logging.getLogger(__name__)
 
@@ -221,8 +221,6 @@ class RouterOutput(BaseModel):
         description="Query complexity type. One of: direct, single, multi_hop, graph"
     )
     confidence: float = Field(
-        ge=0.0,
-        le=1.0,
         description="Router's confidence in the classification (0.0–1.0)",
     )
     reason: str = Field(
@@ -232,7 +230,11 @@ class RouterOutput(BaseModel):
     @field_validator("confidence")
     @classmethod
     def clamp_confidence(cls, v: float) -> float:
-        """Clamp confidence to [0.0, 1.0] even if LLM returns out-of-range."""
+        """Clamp confidence to [0.0, 1.0] even if LLM returns out-of-range.
+
+        NOTE: no ge/le Field constraints here on purpose — those would raise
+        ValidationError before this validator runs, defeating the clamp.
+        """
         return max(0.0, min(1.0, v))
 
 
@@ -265,12 +267,11 @@ class RouterAgent:
     def __init__(self):
         # response_format removed - Groq does not support this parameter.
         # We enforce JSON via prompt and use temperature=0.1 for flexibility.
-        self.llm = ChatOpenAI(
+        self.llm = make_llm(
             model=settings.router_model,
-            api_key=settings.openai_api_key,
-            base_url=settings.llm_base_url,
             temperature=0.1,          # 0.0 → 0.1 for better JSON generation
             max_tokens=300,           # 200 → 300 to leave room for the reason field
+            use_cache=True,           # Phase 5: deterministic routing → safe to cache
         )
         self._mem0_client = None   # lazy-initialized to avoid startup failures
 
@@ -328,11 +329,24 @@ class RouterAgent:
                                 "embedding_model_dims": settings.embedding_dim,
                             },
                         },
-                        # ── CHANGED: use custom provider with existing embedder ──
+                        # ── Embedder: local sentence-transformers (huggingface) ──
+                        # NOTE: the original code used "custom" provider to reuse the
+                        # app's in-process embedder singleton. mem0ai 0.1.29 (pinned
+                        # in requirements.txt, for langchain-openai/openai 1.x
+                        # compatibility) does NOT support the "custom" provider — it
+                        # raises "Unsupported embedding provider: custom". We use the
+                        # built-in "huggingface" provider pointed at the SAME model
+                        # (settings.embedding_model = all-MiniLM-L6-v2, 384 dims) so
+                        # Mem0's embeddings are compatible with the app's vector store
+                        # and the dedicated arap_memories Qdrant collection. mem0 loads
+                        # its own SentenceTransformer instance (the model is already
+                        # cached in HF_HOME, so no re-download), which is a small,
+                        # acceptable duplication versus bumping mem0 to 1.x (which
+                        # requires openai 2.x and would break langchain-openai 0.2.10).
                         "embedder": {
-                            "provider": "custom",
+                            "provider": "huggingface",
                             "config": {
-                                "embed": embedder.embed,               # callable: list[str] → list[list[float]]
+                                "model": settings.embedding_model,
                                 "embedding_dims": settings.embedding_dim,
                             },
                         },
@@ -599,19 +613,24 @@ class RouterAgent:
 
         try:
             t0 = time.perf_counter()
-            results = self.mem0.search(
+            resp = self.mem0.search(
                 query=question,
-                user_id=user_id,
-                limit=5,   # top 5 most relevant memories is sufficient for context
+                # mem0 2.x scopes by `filters`, not `user_id`; `top_k` (not
+                # `limit`) is the count knob. Return shape is {"results": [...]}.
+                filters={"user_id": user_id},
+                top_k=5,   # top 5 most relevant memories is sufficient for context
             )
             elapsed_ms = (time.perf_counter() - t0) * 1000
+
+            # Unwrap the {"results": [...]} envelope (mem0 2.x).
+            items = resp.get("results", []) if isinstance(resp, dict) else resp or []
 
             memories = [
                 {
                     "memory": r.get("memory", ""),
                     "score":  float(r.get("score", 0.0)),
                 }
-                for r in (results or [])
+                for r in items
                 if r.get("memory")   # skip empty memory strings
             ]
 
@@ -619,6 +638,20 @@ class RouterAgent:
                 "Mem0: fetched %d memories for user_id='%s' in %.0fms",
                 len(memories), user_id, elapsed_ms,
             )
+
+            # Phase 8: persist the fetched memories as memory metadata in
+            # Postgres (Memory metadata → PostgreSQL). Idempotent upsert, so
+            # re-recording known facts is a no-op. Best-effort; never blocks.
+            # record_memory is synchronous (psycopg2) and safe to call from
+            # this worker-thread context.
+            try:
+                for m in memories:
+                    record_memory(user_id, m.get("memory", ""))
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug(
+                    "Mem0: persist memory metadata to Postgres failed (non-fatal): %s", e
+                )
+
             return memories
 
         except Exception as e:

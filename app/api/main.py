@@ -73,13 +73,16 @@ WEBSOCKET PROTOCOL
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from celery.result import AsyncResult
 
@@ -87,6 +90,9 @@ from app.core.config import settings
 from app.core.orchestrator import orchestrator
 from app.services.tasks import ingest_document_task
 from app.core.celery_app import celery_app
+from evaluation.ragas_eval import run_ragas_evaluation
+from app.services.log_store import log_api
+from app.services import analytics as analytics_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -98,6 +104,37 @@ logger = logging.getLogger(__name__)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # LIFESPAN — startup / shutdown hooks
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _bm25_reload_listener() -> None:
+    """
+    Background daemon thread: rebuild the API's in-memory BM25 keyword index
+    from Qdrant whenever a Celery ingest worker publishes a reload signal.
+
+    Ingestion runs in a separate Celery worker process, so the API's own BM25
+    singleton would otherwise never see newly ingested documents. This listener
+    keeps it in sync. Runs in a daemon thread (started in lifespan); any failure
+    is caught and logged so the API itself is never affected.
+    """
+    try:
+        import redis as redis_lib
+        r = redis_lib.from_url(settings.redis_url)
+        pubsub = r.pubsub()
+        pubsub.subscribe("arap:bm25:reload")
+        for message in pubsub.listen():
+            if message.get("type") == "message":
+                try:
+                    logger.info("BM25 reload signal received — rebuilding from Qdrant")
+                    from app.services.vector_store import vector_store
+                    from app.services.bm25_index import bm25_index
+                    bm25_index.load_from_qdrant(vector_store.client, settings.qdrant_collection)
+                    logger.info(
+                        "BM25 index reloaded from Qdrant (%d chunks).", bm25_index.size
+                    )
+                except Exception as e:  # pragma: no cover - depends on Qdrant
+                    logger.warning("BM25 reload failed (non-fatal): %s", e)
+    except Exception as e:  # pragma: no cover - depends on Redis availability
+        logger.warning("BM25 reload listener stopped (non-fatal): %s", e)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -134,6 +171,27 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("LangGraph compilation failed — API may not work: %s", e)
 
+    # Rebuild the API process's in-memory BM25 keyword index from Qdrant
+    # (the source of truth). Ingestion runs in a separate Celery worker
+    # process, so the API's own BM25 would otherwise stay empty and hybrid
+    # retrieval would silently degrade to dense-only. Best-effort, non-fatal.
+    try:
+        from app.services.vector_store import vector_store
+        from app.services.bm25_index import bm25_index
+        bm25_index.load_from_qdrant(vector_store.client, settings.qdrant_collection)
+        logger.info("BM25 index loaded from Qdrant (%d chunks).", bm25_index.size)
+    except Exception as e:  # pragma: no cover - depends on Qdrant availability
+        logger.warning("BM25 initial load from Qdrant failed (non-fatal): %s", e)
+
+    # Start a background listener so the API rebuilds its BM25 index whenever a
+    # Celery ingest worker publishes a reload signal after finishing a document.
+    # Daemon thread: won't block shutdown; any error is logged, not fatal.
+    try:
+        import threading
+        threading.Thread(target=_bm25_reload_listener, daemon=True).start()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("BM25 reload listener failed to start (non-fatal): %s", e)
+
     logger.info("ARAP ready.")
     yield
     logger.info("ARAP shutting down.")
@@ -165,6 +223,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Phase 10 — API access logging middleware
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Every request is recorded to api_log (Postgres) with method, path, status
+# and latency. Health/docs/openapi are skipped to avoid log noise. The write
+# is best-effort and never blocks or fails the response.
+
+_SKIP_LOG_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
+
+
+@app.middleware("http")
+async def api_log_middleware(request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    if request.url.path not in _SKIP_LOG_PATHS:
+        try:
+            # log_api is synchronous (psycopg2); run it off the event loop so a
+            # slow/blocked Postgres write never delays the response.
+            await asyncio.to_thread(
+                log_api,
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                latency_ms=round(elapsed_ms, 2),
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("api_log_middleware write failed (non-fatal): %s", e)
+
+    return response
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -254,6 +345,13 @@ class HealthResponse(BaseModel):
     redis: str
 
 
+class EvalRequest(BaseModel):
+    """Phase 9 — run the RAGAS evaluation suite and persist results to Postgres."""
+    limit: int = Field(default=20, ge=1, le=200, description="Number of questions to evaluate")
+    save: str | None = Field(default=None, description="Optional JSON path to also save the report")
+    no_seed: bool = Field(default=False, description="Do not fall back to seeded questions")
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ENDPOINTS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -314,12 +412,21 @@ async def ingest_document(file: UploadFile = File(...), user_id: str = "default"
                    f"Received: {len(contents) / 1024 / 1024:.1f} MB.",
         )
 
-    # Send task to Celery worker
-    task = ingest_document_task.delay(
-        file_content=contents,
-        filename=filename,
-        user_id=user_id
-    )
+    # Send task to Celery worker.
+    # Fail gracefully if the broker (Redis) is unreachable, so the caller
+    # gets a clear 500 instead of an unhandled exception / stack trace.
+    try:
+        task = ingest_document_task.delay(
+            file_content=contents,
+            filename=filename,
+            user_id=user_id,
+        )
+    except Exception as exc:
+        logger.error("Failed to enqueue ingest task (broker unreachable?): %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="Ingestion queue is temporarily unavailable. Please try again later.",
+        )
 
     logger.info("Ingest task queued: task_id=%s, filename=%s", task.id, filename)
 
@@ -406,6 +513,161 @@ async def query(req: QueryRequest):
             status_code=500,
             detail=f"Query failed: {str(e)[:200]}",
         )
+
+
+@app.post("/eval", tags=["Evaluation"])
+async def eval_endpoint(req: EvalRequest):
+    """
+    Phase 9 — run the RAGAS evaluation suite and persist results to Postgres.
+
+    Runs each question through the live query pipeline, computes RAGAS metrics
+    (faithfulness / answer_relevancy / context_precision / context_recall),
+    captures token usage, and writes everything to the evaluation_runs /
+    evaluation_scores / retrieval_results tables (scripts/init_db.sql).
+
+    The suite can take minutes (it issues many LLM calls), so it runs in a
+    worker thread with its own event loop to keep the API responsive.
+    """
+    try:
+        report = await asyncio.to_thread(
+            lambda: asyncio.run(
+                run_ragas_evaluation(
+                    orchestrator,
+                    limit=req.limit,
+                    include_seed=not req.no_seed,
+                    save_path=req.save,
+                )
+            )
+        )
+        return report
+    except Exception as e:
+        logger.exception("Evaluation failed: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Evaluation failed: {str(e)[:200]}",
+        )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Phase 11 — Analytics (JSON endpoints + HTML dashboard)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@app.get("/analytics/summary", tags=["Analytics"])
+async def analytics_summary():
+    """Headline metrics: totals, avg latency / faithfulness / precision / recall."""
+    return await asyncio.to_thread(analytics_service.summary)
+
+
+@app.get("/analytics/documents", tags=["Analytics"])
+async def analytics_documents(limit: int = 10):
+    """Top documents by query volume, with average faithfulness."""
+    return await asyncio.to_thread(analytics_service.top_documents, limit=limit)
+
+
+@app.get("/analytics/eval-trend", tags=["Analytics"])
+async def analytics_eval_trend(limit: int = 20):
+    """Recent evaluation runs with headline metrics."""
+    return await asyncio.to_thread(analytics_service.eval_trend, limit=limit)
+
+
+@app.get("/analytics", response_class=HTMLResponse, tags=["Analytics"])
+async def analytics_dashboard():
+    """
+    Minimal self-contained HTML dashboard (no external libraries).
+
+    Fetches the three JSON analytics endpoints on load and renders them as
+    stat cards + tables. Meant as an at-a-glance operational view, not a BI tool.
+    """
+    return HTMLResponse(content=_ANALYTICS_HTML)
+
+
+_ANALYTICS_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARAP Analytics</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         margin: 0; padding: 24px; background: #0f1420; color: #e7ecf3; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #8b97a8; font-size: 13px; margin-bottom: 20px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr));
+           gap: 14px; margin-bottom: 28px; }
+  .card { background: #171e2e; border: 1px solid #26304a; border-radius: 12px;
+          padding: 16px; }
+  .card .label { color: #8b97a8; font-size: 12px; text-transform: uppercase;
+                 letter-spacing: .04em; }
+  .card .value { font-size: 26px; font-weight: 650; margin-top: 6px; }
+  h2 { font-size: 15px; margin: 22px 0 10px; }
+  table { width: 100%; border-collapse: collapse; background: #171e2e;
+          border: 1px solid #26304a; border-radius: 12px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 12px; font-size: 13px;
+           border-bottom: 1px solid #26304a; }
+  th { color: #8b97a8; font-weight: 600; background: #131a29; }
+  tr:last-child td { border-bottom: none; }
+  .muted { color: #8b97a8; }
+  button { background: #2c6cf0; color: #fff; border: 0; border-radius: 8px;
+           padding: 8px 14px; font-size: 13px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <h1>ARAP Analytics</h1>
+  <div class="sub">Phase 11 dashboard &middot; <button onclick="loadAll()">Refresh</button></div>
+
+  <div class="cards" id="cards"></div>
+
+  <h2>Top documents</h2>
+  <table id="docs"><thead><tr>
+    <th>Filename</th><th>doc_id</th><th>Queries</th><th>Avg faithfulness</th>
+  </tr></thead><tbody></tbody></table>
+
+  <h2>Evaluation runs</h2>
+  <table id="evals"><thead><tr>
+    <th>Run</th><th>When</th><th>Questions</th><th>Status</th><th>Avg faithfulness</th>
+  </tr></thead><tbody></tbody></table>
+
+<script>
+function fmt(v) { return (v === null || v === undefined) ? '&mdash;' : v; }
+
+async function loadAll() {
+  try {
+    const s = await (await fetch('/analytics/summary')).json();
+    const cards = [
+      ['Total queries', fmt(s.total_queries)],
+      ['Documents', fmt(s.total_documents)],
+      ['Eval runs', fmt(s.total_evals)],
+      ['Avg latency (ms)', fmt(s.avg_latency_ms)],
+      ['Avg faithfulness', fmt(s.avg_faithfulness)],
+      ['Avg precision', fmt(s.avg_precision)],
+      ['Avg recall', fmt(s.avg_recall)],
+    ];
+    document.getElementById('cards').innerHTML = cards.map(
+      c => `<div class="card"><div class="label">${c[0]}</div><div class="value">${c[1]}</div></div>`
+    ).join('');
+
+    const docs = await (await fetch('/analytics/documents')).json();
+    document.querySelector('#docs tbody').innerHTML = docs.length ? docs.map(d =>
+      `<tr><td>${fmt(d.filename)}</td><td class="muted">${fmt(d.doc_id)}</td>
+       <td>${fmt(d.query_count)}</td><td>${fmt(d.avg_faithfulness)}</td></tr>`
+    ).join('') : '<tr><td colspan="4" class="muted">No documents yet.</td></tr>';
+
+    const evals = await (await fetch('/analytics/eval-trend')).json();
+    document.querySelector('#evals tbody').innerHTML = evals.length ? evals.map(e =>
+      `<tr><td>#${fmt(e.run_id)}</td><td class="muted">${fmt(e.created_at)}</td>
+       <td>${fmt(e.num_questions)}</td><td>${fmt(e.status)}</td>
+       <td>${fmt(e.average_faithfulness)}</td></tr>`
+    ).join('') : '<tr><td colspan="5" class="muted">No evaluation runs yet.</td></tr>';
+  } catch (err) {
+    document.getElementById('cards').innerHTML =
+      '<div class="card"><div class="label">Error</div><div class="value">&mdash;</div></div>';
+  }
+}
+loadAll();
+</script>
+</body>
+</html>"""
 
 
 @app.websocket("/ws/{session_id}")

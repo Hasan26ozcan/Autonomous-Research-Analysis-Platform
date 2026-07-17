@@ -60,12 +60,19 @@ class TestPDFChunker:
         assert ("bar", 2) in stream
 
     def test_slide_window_produces_overlapping_chunks(self):
-        """Consecutive chunks must share chunk_overlap words."""
-        # 30 words, chunk_size=10, overlap=3 → step=7
-        words = [f"word{i}" for i in range(30)]
+        """Consecutive chunks must share chunk_overlap words.
+
+        The chunker discards any window shorter than 30 words, so the sliding
+        window must be at least 30 words wide and the source text long enough
+        to produce more than one qualifying window.
+        """
+        # chunk_size=30, overlap=3 → step=27; 90 words yields 3 windows.
+        from app.services.chunker import PDFChunker
+        chunker = PDFChunker(chunk_size=30, chunk_overlap=3)
+        words = [f"word{i}" for i in range(90)]
         pages = [{"page": 1, "text": " ".join(words)}]
-        stream = self.chunker._build_word_stream(pages)
-        chunks = self.chunker._slide_window(stream, doc_id="test", filename="test.pdf")
+        stream = chunker._build_word_stream(pages)
+        chunks = chunker._slide_window(stream, doc_id="test", filename="test.pdf")
 
         assert len(chunks) > 1
 
@@ -327,10 +334,16 @@ class TestBM25Index:
         assert any("Qdrant" in r["text"] for r in results)
 
     def test_rare_term_ranks_higher_than_common_term(self):
-        """BM25 IDF means rare terms score higher than common 'the', 'is', etc."""
+        """BM25 IDF means rare terms score higher than common 'the', 'is', etc.
+
+        BM25Okapi's IDF smoothing yields all-zero scores for a 2-document
+        corpus, so a third neutral document is included to give the index a
+        non-degenerate size.
+        """
         chunks = self._make_chunks([
             "HNSW is an efficient algorithm for approximate nearest neighbor search",
             "The cat sat on the mat and the dog sat on the log",
+            "Machine learning models require large datasets and significant compute",
         ])
         self.index.add_chunks(chunks)
         results = self.index.search("HNSW algorithm")

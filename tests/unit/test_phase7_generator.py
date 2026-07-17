@@ -631,19 +631,19 @@ class TestStoreMemory:
     def test_skips_when_mem0_unavailable(self):
         gen = make_generator(mem0_available=False)
         result = gen.store_memory(make_state(answer="An answer."))
-        assert result == {}
+        assert result is None
 
     def test_mem0_exception_does_not_propagate(self):
         gen = make_generator()
         gen._mem0_client.add.side_effect = ConnectionError("Mem0 unreachable")
         result = gen.store_memory(make_state(answer="An answer."))
-        assert result == {}
+        assert result is None
 
-    def test_returns_empty_dict(self):
+    def test_returns_none(self):
         """store_memory is a pure side-effect node — must not modify state."""
         gen = make_generator()
         result = gen.store_memory(make_state(answer="An answer."))
-        assert result == {}
+        assert result is None
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -677,7 +677,7 @@ class TestRetryLoop:
         from langchain_core.messages import SystemMessage
 
         gen = make_generator(
-            llm_response="Answer here.",
+            llm_response="This proposed method improves the baseline accuracy substantially.",
             nli_scores=[[0.50, 0.30, 0.20]],
         )
         state = make_state(retry_count=0)

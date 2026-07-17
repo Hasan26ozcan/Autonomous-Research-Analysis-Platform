@@ -12,8 +12,8 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
+from app.services.llm_client import make_llm
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from app.core.config import settings
@@ -105,15 +105,20 @@ class ContextualEnricher:
         # CRITICAL FIX 1: Model explicitly set to Groq's best non-reasoning model.
         # Previously, settings.router_model (gpt-4o-mini) was used, but this model
         # is not available on Groq and would default to returning errors or empty responses.
-        self.llm = ChatOpenAI(
-            model="llama-3.1-70b-versatile",  # Works on Groq, NOT a reasoning model
-            api_key=settings.openai_api_key,
-            base_url=settings.llm_base_url,
+        self.llm = make_llm(
+            # Use the configured router model (via .env) instead of a hardcoded
+            # name — llama-3.1-70b-versatile was decommissioned by Groq.
+            model=settings.router_model,
             temperature=0.0,                 # deterministic: same chunk → same context
             # CRITICAL FIX 2: max_tokens increased from 400 to 512.
             # Since this is NOT a reasoning model, all 512 tokens go to the visible output,
             # which definitively prevents empty responses like "[Context: ]".
             max_tokens=512,
+            # 429/timeout resilience is now handled reactively by the shared
+            # make_llm() factory (SDK retries 429 with backoff honoring
+            # Retry-After). Enrichment still degrades gracefully to original
+            # text on any failure, so a transient Groq 429 no longer drops a
+            # chunk — it gets retried automatically.
         )
         self._cache: dict[tuple[str, int], str] = {}
 
@@ -330,12 +335,13 @@ class ContextualEnricher:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     @retry(
-        # Retry on OpenAI rate limit or transient network errors.
-        # Exponential backoff: wait 2s, 4s, 8s before giving up.
-        # After 3 attempts with no success, the exception propagates to
-        # _enrich_single_chunk which handles it gracefully.
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=8),
+        # Retry once on transient errors, but fail fast: with request_timeout=30
+        # and max_retries=0 on the client, a dead/unreachable backend raises
+        # quickly and _enrich_single_chunk degrades gracefully. We avoid many
+        # long retries because they multiplied into multi-minute stalls when
+        # Groq was IP-banned.
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(multiplier=1, min=1, max=4),
         retry=retry_if_exception_type(Exception),
         reraise=True,
     )
@@ -520,7 +526,13 @@ def enrich_chunks(state: "AgentState") -> dict:
 
 # ── Top‑level function for ingest_service ────────────────────────────────────
 
-def enrich_chunk(chunk_text: str, page: int, doc_id: str, chunk_index: int) -> str:
+def enrich_chunk(
+    chunk_text: str,
+    page: int,
+    doc_id: str,
+    chunk_index: int,
+    doc_anchor: str = "",
+) -> str:
     """
     Convenience wrapper around ContextualEnricher.enrich_text().
 
@@ -533,18 +545,22 @@ def enrich_chunk(chunk_text: str, page: int, doc_id: str, chunk_index: int) -> s
         page:         Page number.
         doc_id:       Document ID.
         chunk_index:  Chunk index.
+        doc_anchor:   Optional document anchor (first 400 words of the
+                      document beginning). When provided, every chunk is
+                      situated in the full document instead of using its own
+                      text as the anchor. Callers that ingest via Celery
+                      (ingest_service.run_ingest_pipeline) should pass this.
 
     Returns:
         Enriched text with context prepended, or original text on failure.
     """
     # We don't have filename here; we can use doc_id as a fallback.
     filename = f"doc_{doc_id[:8]}" if doc_id else "document"
-    # We also don't have doc_anchor, but enrich_text will build a fallback anchor.
     return contextual_enricher.enrich_text(
         chunk_text=chunk_text,
         page=page,
         filename=filename,
         doc_id=doc_id,
         chunk_index=chunk_index,
-        doc_anchor="",  # let enrich_text build a fallback
+        doc_anchor=doc_anchor,
     )
