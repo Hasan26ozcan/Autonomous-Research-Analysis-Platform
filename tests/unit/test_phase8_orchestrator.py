@@ -1069,7 +1069,13 @@ class TestLifespan:
         emb = MagicMock()
         emb.warmup = MagicMock()
         orc = MagicMock()
-        orc.ingest_graph = MagicMock(side_effect=RuntimeError("bad graph"))
+        # ingest_graph is a property on the real orchestrator (it compiles the
+        # graph lazily), so accessing it can raise. A plain MagicMock attribute
+        # would return itself on access without raising — make it raise on
+        # *access* so the lifespan's except branch (171-172) is actually hit.
+        def _raise_on_access(*args, **kwargs):
+            raise RuntimeError("bad graph")
+        type(orc).ingest_graph = property(_raise_on_access)
         orc.query_graph = MagicMock()
         vs = MagicMock()
         vs.client = MagicMock()

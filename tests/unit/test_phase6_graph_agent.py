@@ -895,7 +895,7 @@ class TestGraphAgentExtra:
             side_effect=json.JSONDecodeError("bad", "x", 0),
         ):
             result = agent._extract_triples_from_text(
-                "Enough words here to pass the minimum length check."
+                "Enough words here to pass the minimum length check for our extraction test case."
             )
         assert result == []
 
@@ -907,6 +907,30 @@ class TestGraphAgentExtra:
         agent = make_agent_with_mocks()
         agent.extraction_llm.invoke.side_effect = ValueError("boom")
         result = agent._extract_triples_from_text(
-            "Enough words here to pass the minimum length check."
+            "Enough words here to pass the minimum length check for our extraction test case."
+        )
+        assert result == []
+
+    def test_extract_triples_last_attempt_exception_unwrapped(self):
+        """When the caught error exposes a tenacity ``last_attempt`` whose
+        ``.exception()`` itself raises, the inner guard (lines 750-751) must
+        fall back to the original error instead of propagating. This covers
+        the defensive branch that protects the log line from a broken Future."""
+        from app.agents.graph_agent import KnowledgeGraphAgent
+
+        class FakeRetryError(Exception):
+            def __init__(self, last_attempt):
+                self.last_attempt = last_attempt
+                super().__init__("retry failed")
+
+        last_attempt = MagicMock()
+        last_attempt.exception.side_effect = RuntimeError("future.exception() raised")
+
+        agent = make_agent_with_mocks()
+        agent._call_extraction_llm = MagicMock(
+            side_effect=FakeRetryError(last_attempt)
+        )
+        result = agent._extract_triples_from_text(
+            "Enough words here to pass the minimum length check for our extraction test case."
         )
         assert result == []

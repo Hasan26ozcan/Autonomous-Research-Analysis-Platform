@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from app.services.llm_client import make_llm
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from app.core.config import settings
 from app.core.state import AgentState
@@ -156,7 +155,7 @@ class ContextualEnricher:
 
         if not chunks:
             logger.warning("enrich_chunks called with no chunks in state — skipping")
-            return None
+            return {}
 
         t0 = time.perf_counter()
 
@@ -334,17 +333,6 @@ class ContextualEnricher:
     # LLM Call (isolated for testability)
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    @retry(
-        # Retry once on transient errors, but fail fast: with request_timeout=30
-        # and max_retries=0 on the client, a dead/unreachable backend raises
-        # quickly and _enrich_single_chunk degrades gracefully. We avoid many
-        # long retries because they multiplied into multi-minute stalls when
-        # Groq was IP-banned.
-        stop=stop_after_attempt(2),
-        wait=wait_exponential(multiplier=1, min=1, max=4),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-    )
     def _generate_context(
         self,
         chunk_text: str,
@@ -357,8 +345,11 @@ class ContextualEnricher:
 
         This method is isolated from _enrich_single_chunk so that:
           1. Tests can mock just this method without mocking LangChain internals
-          2. The retry decorator applies only to the LLM call, not to cache logic
-          3. The method has a single responsibility: LLM in → context string out
+          2. The method has a single responsibility: LLM in → context string out
+          3. On any LLM failure it raises, and _enrich_single_chunk degrades
+             gracefully (the per-chunk call is fail-fast — no retry — so a
+             transient backend error drops just that one chunk to its original
+             text instead of stalling the whole document)
 
         Input to LLM:
           - CONTEXT_SYSTEM_PROMPT: detailed instructions for context generation
