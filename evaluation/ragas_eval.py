@@ -32,11 +32,13 @@ logger = logging.getLogger(__name__)
 SEED_QA: list[dict[str, str]] = [
     {
         "question": "What is the main contribution of this document?",
-        "ground_truth": "The document presents its main contribution in the introduction or abstract.",
+        "ground_truth": "The document presents its main contribution in the "
+        "introduction or abstract.",
     },
     {
         "question": "What methodology is described in this document?",
-        "ground_truth": "The methodology section describes the research or engineering approach used.",
+        "ground_truth": "The methodology section describes the research or "
+        "engineering approach used.",
     },
     {
         "question": "What are the key results or findings?",
@@ -52,11 +54,13 @@ SEED_QA: list[dict[str, str]] = [
     },
     {
         "question": "What datasets or benchmarks are referenced?",
-        "ground_truth": "The document references one or more datasets or benchmark tasks used for validation.",
+        "ground_truth": "The document references one or more datasets or "
+        "benchmark tasks used for validation.",
     },
     {
         "question": "How does the proposed method compare to baselines?",
-        "ground_truth": "The document explains how the proposed method improves over the baseline methods.",
+        "ground_truth": "The document explains how the proposed method "
+        "improves over the baseline methods.",
     },
 ]
 
@@ -161,6 +165,7 @@ async def run_ragas_evaluation(
     - overall success statistics.
     """
     try:
+        from datasets import Dataset
         from ragas import evaluate
         from ragas.metrics import (
             answer_relevancy,
@@ -168,7 +173,6 @@ async def run_ragas_evaluation(
             context_recall,
             faithfulness,
         )
-        from datasets import Dataset
     except ImportError as exc:
         logger.warning("RAGAS dependencies are not available: %s", exc)
         return _build_fallback_report(
@@ -255,7 +259,11 @@ async def run_ragas_evaluation(
             "questions_succeeded": len(successful),
             "questions_failed": len(processed) - len(successful),
             "average_faithfulness": _average(
-                [record.get("faithfulness_score") for record in successful if record.get("faithfulness_score") is not None]
+                [
+                    record.get("faithfulness_score")
+                    for record in successful
+                    if record.get("faithfulness_score") is not None
+                ]
             ),
         },
     }
@@ -281,7 +289,11 @@ async def _build_fallback_report(
     for item in test_set:
         processed.append(await _run_single_query(orchestrator, item))
 
-    successful = [record for record in processed if not record.get("error") and bool(record.get("answer"))]
+    successful = [
+        record
+        for record in processed
+        if not record.get("error") and bool(record.get("answer"))
+    ]
     report = {
         "status": "partial",
         "error": reason,
@@ -298,7 +310,11 @@ async def _build_fallback_report(
             "questions_succeeded": len(successful),
             "questions_failed": len(processed) - len(successful),
             "average_faithfulness": _average(
-                [record.get("faithfulness_score") for record in successful if record.get("faithfulness_score") is not None]
+                [
+                    record.get("faithfulness_score")
+                    for record in successful
+                    if record.get("faithfulness_score") is not None
+                ]
             ),
         },
     }
@@ -343,9 +359,9 @@ async def _persist_eval_run(report: dict[str, Any], processed: list[dict[str, An
     """
     try:
         from app.services.eval_store import (
-            start_run,
             finish_run,
             record_retrieval_results,
+            start_run,
         )
 
         run_id = start_run(len(processed))
@@ -391,8 +407,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
     """Create a CLI parser for running evaluation from the shell."""
     parser = argparse.ArgumentParser(description="Run ARAP RAGAS and evaluation suite")
     parser.add_argument("--limit", type=int, default=20, help="How many questions to evaluate")
-    parser.add_argument("--save", type=str, default=None, help="Optional JSON path to store the report")
-    parser.add_argument("--no-seed", action="store_true", help="Do not fall back to seeded questions")
+    parser.add_argument(
+        "--save", type=str, default=None, help="Optional JSON path to store the report"
+    )
+    parser.add_argument(
+        "--no-seed", action="store_true", help="Do not fall back to seeded questions"
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     return parser
 

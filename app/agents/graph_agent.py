@@ -103,20 +103,19 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import TYPE_CHECKING
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from openai import BadRequestError
-from app.services.llm_client import make_llm
 from pydantic import BaseModel, Field, field_validator
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
 
 from app.core.config import settings
+
 # NOTE: AgentState must be a real (non-TYPE_CHECKING) import here. The
 # functions below use it as a string annotation (state: "AgentState") under
 # `from __future__ import annotations`, and LangGraph resolves those string
@@ -125,6 +124,7 @@ from app.core.config import settings
 # actually bound in this module's namespace at runtime, and that resolution
 # fails with: NameError: name 'AgentState' is not defined.
 from app.core.state import AgentState
+from app.services.llm_client import make_llm
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +221,12 @@ Output:
   "triples": [
     {"head": "FloodNet", "relation": "developed_by", "tail": "MIT", "confidence": 0.95},
     {"head": "FloodNet", "relation": "uses_dataset", "tail": "ERA5", "confidence": 0.9},
-    {"head": "FloodNet", "relation": "outperforms", "tail": "baseline CNN model", "confidence": 0.85}
+    {
+        "head": "FloodNet",
+        "relation": "outperforms",
+        "tail": "baseline CNN model",
+        "confidence": 0.85,
+    }
   ]
 }\
 """
@@ -348,7 +353,7 @@ def _validate_cypher(cypher: str) -> tuple[bool, str]:
     if "LIMIT" not in upper_cypher:
         return False, "Query missing required LIMIT clause"
 
-    if not ("MATCH" in upper_cypher):
+    if "MATCH" not in upper_cypher:
         return False, "Query must contain at least one MATCH clause"
 
     return True, "OK"
@@ -466,7 +471,7 @@ class KnowledgeGraphAgent:
     # LangGraph Node (INGEST GRAPH): extract_and_store_node()
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def extract_and_store_node(self, state: "AgentState") -> dict:
+    def extract_and_store_node(self, state: AgentState) -> dict:
         """
         LangGraph node for the INGEST pipeline (runs once per document).
 
@@ -511,7 +516,7 @@ class KnowledgeGraphAgent:
         t0 = time.perf_counter()
 
         chunks: list[dict] = state.get("chunks", [])
-        doc_id: str = state.get("doc_id", "")
+        doc_id: str = state.get("doc_id") or ""
 
         if not chunks:
             logger.warning("extract_and_store_node: no chunks in state — skipping")
@@ -584,7 +589,7 @@ class KnowledgeGraphAgent:
     # LangGraph Node (QUERY GRAPH): graph_retrieve()
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def graph_retrieve(self, state: "AgentState") -> dict:
+    def graph_retrieve(self, state: AgentState) -> dict:
         """
         LangGraph node for the QUERY pipeline, "graph" route only.
 
@@ -678,7 +683,7 @@ class KnowledgeGraphAgent:
         the model's effective attention range for accurate extraction.
         """
         truncated = " ".join(text.split()[:1500])
-        from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+        from app.services.rate_limiter import estimate_tokens, groq_rate_limiter
         groq_rate_limiter.acquire(estimate_tokens(
             TRIPLE_EXTRACTION_SYSTEM, truncated, max_output_tokens=2000,
         ))
@@ -868,7 +873,7 @@ class KnowledgeGraphAgent:
             List of entity name strings, e.g. ["FloodNet", "MIT", "ERA5"].
         """
         try:
-            from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+            from app.services.rate_limiter import estimate_tokens, groq_rate_limiter
             groq_rate_limiter.acquire(estimate_tokens(
                 QUERY_ENTITY_EXTRACTION_SYSTEM, question, max_output_tokens=150,
             ))
@@ -914,7 +919,7 @@ class KnowledgeGraphAgent:
         )
 
         try:
-            from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+            from app.services.rate_limiter import estimate_tokens, groq_rate_limiter
             groq_rate_limiter.acquire(estimate_tokens(
                 CYPHER_GENERATION_SYSTEM, user_prompt, max_output_tokens=300,
             ))
@@ -988,7 +993,7 @@ class KnowledgeGraphAgent:
     # Private: Empty State Update Helper
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def _empty_update(self, state: "AgentState", t0: float) -> dict:
+    def _empty_update(self, state: AgentState, t0: float) -> dict:
         """
         Safe fallback state update when graph retrieval cannot proceed.
 

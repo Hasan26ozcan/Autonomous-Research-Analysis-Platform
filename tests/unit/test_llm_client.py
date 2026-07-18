@@ -45,7 +45,10 @@ def test_reset_and_get_token_usage(llm_client):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_record_usage_from_dict_metadata(llm_client):
-    msg = AIMessage(content="x", usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
+    msg = AIMessage(
+        content="x",
+        usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+    )
     llm_client._record_usage(msg)
     snap = llm_client.get_and_reset_token_usage()
     assert snap["prompt_tokens"] == 10
@@ -127,9 +130,12 @@ def test_wrapper_invoke_cache_miss_writes_cache(llm_client):
 async def test_wrapper_ainvoke_without_cache(llm_client):
     client = MagicMock()
     client.model_name = "gpt-4o"
-    client.ainvoke = AsyncMock(return_value=AIMessage(
-        content="async answer", usage_metadata={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
-    ))
+    client.ainvoke = AsyncMock(
+        return_value=AIMessage(
+            content="async answer",
+            usage_metadata={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        )
+    )
     wrapper = llm_client._LLMWrapper(client)
     result = await wrapper.ainvoke([("human", "hi")])
     assert result.content == "async answer"

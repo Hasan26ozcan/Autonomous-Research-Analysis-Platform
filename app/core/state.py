@@ -25,8 +25,8 @@ State flow by node:
 """
 
 from __future__ import annotations
-from typing import TypedDict, Literal
 
+from typing import Literal, TypedDict
 
 # Adaptive RAG query taxonomy — Jeong et al. (2024), arXiv:2403.14403
 QueryType = Literal["direct", "single", "multi_hop", "graph"]

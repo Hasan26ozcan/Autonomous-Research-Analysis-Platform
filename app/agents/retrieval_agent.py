@@ -111,29 +111,29 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from sentence_transformers import CrossEncoder
-from app.services.llm_client import make_llm
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
 
 from app.core.config import settings
-from app.services.embedder import embedder
-from app.services.vector_store import vector_store
-from app.services.bm25_index import bm25_index
-from app.services.redis_cache import retrieval_cache_get, retrieval_cache_set
+
 # NOTE: must be a real (non-TYPE_CHECKING) import - see graph_agent.py note.
 # retrieve()/retrieve_multi() use `state: "AgentState"` as a runtime-resolved
 # string annotation (LangGraph calls typing.get_type_hints() on node
 # functions), so AgentState must actually be bound in this module's
 # namespace at runtime.
 from app.core.state import AgentState
+from app.services.bm25_index import bm25_index
+from app.services.embedder import embedder
+from app.services.llm_client import make_llm
+from app.services.redis_cache import retrieval_cache_get, retrieval_cache_set
+from app.services.vector_store import vector_store
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +253,7 @@ class RetrievalAgent:
     # LangGraph Node: retrieve() — single route
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def retrieve(self, state: "AgentState") -> dict:
+    def retrieve(self, state: AgentState) -> dict:
         """
         LangGraph node: single-hop retrieval.
 
@@ -340,7 +340,7 @@ class RetrievalAgent:
     # LangGraph Node: retrieve_multi() — multi_hop route
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def retrieve_multi(self, state: "AgentState") -> dict:
+    def retrieve_multi(self, state: AgentState) -> dict:
         """
         LangGraph node: multi-hop retrieval with query decomposition.
 
@@ -509,7 +509,7 @@ class RetrievalAgent:
             3-5 sentence hypothetical answer passage, or original question on error.
         """
         try:
-            from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+            from app.services.rate_limiter import estimate_tokens, groq_rate_limiter
             groq_rate_limiter.acquire(estimate_tokens(
                 HYDE_SYSTEM_PROMPT, question, max_output_tokens=250,
             ))
@@ -551,7 +551,7 @@ class RetrievalAgent:
             Always returns at least [question] (never empty list).
         """
         try:
-            from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+            from app.services.rate_limiter import estimate_tokens, groq_rate_limiter
             groq_rate_limiter.acquire(estimate_tokens(
                 DECOMPOSE_SYSTEM_PROMPT, question, max_output_tokens=200,
             ))
@@ -755,7 +755,7 @@ class RetrievalAgent:
         ]
 
         t0 = time.perf_counter()
-        scores: list[float] = self.cross_encoder.predict(pairs).tolist()
+        scores: list[float] = self.cross_encoder.predict(pairs).tolist()  # type: ignore[arg-type]
         elapsed_ms = (time.perf_counter() - t0) * 1000
         logger.debug(
             "Cross-encoder scored %d pairs in %.0fms", len(pairs), elapsed_ms
@@ -764,7 +764,7 @@ class RetrievalAgent:
         # Attach rerank_score to each chunk and sort descending
         scored_chunks = [
             {**chunk, "rerank_score": float(score)}
-            for chunk, score in zip(chunks, scores)
+            for chunk, score in zip(chunks, scores, strict=False)
         ]
         scored_chunks.sort(key=lambda c: c["rerank_score"], reverse=True)
 
@@ -821,7 +821,7 @@ class RetrievalAgent:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _empty_update(
-        self, state: "AgentState", t0: float, node_key: str
+        self, state: AgentState, t0: float, node_key: str
     ) -> dict:
         """
         Return a safe empty state update when retrieval has nothing to return.
@@ -858,11 +858,14 @@ def _avg_rerank_score(chunks: list[dict]) -> float:
     """
     if not chunks:
         return 0.0
-    scores = [
-        c.get("rerank_score") if c.get("rerank_score") is not None
-        else c.get("rrf_score", 0.0)
-        for c in chunks
-    ]
+    scores: list[float] = []
+    for c in chunks:
+        rerank = c.get("rerank_score")
+        if rerank is not None:
+            scores.append(float(rerank))
+        else:
+            rrf = c.get("rrf_score")
+            scores.append(float(rrf) if rrf is not None else 0.0)
     return round(sum(scores) / len(scores), 4)
 
 

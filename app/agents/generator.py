@@ -108,20 +108,20 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import TYPE_CHECKING
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from sentence_transformers import CrossEncoder
 
 from app.core.config import settings
-from app.services.llm_client import make_llm
-from app.services.postgres_store import record_conversation
+
 # NOTE: must be a real (non-TYPE_CHECKING) import - see graph_agent.py note.
 # generate()/judge()/should_retry() use `state: "AgentState"` as a
 # runtime-resolved string annotation (LangGraph calls typing.get_type_hints()
 # on node functions), so AgentState must actually be bound in this module's
 # namespace at runtime.
 from app.core.state import AgentState
+from app.services.llm_client import make_llm
+from app.services.postgres_store import record_conversation
 
 logger = logging.getLogger(__name__)
 
@@ -307,7 +307,7 @@ class AnswerGenerator:
     # LangGraph Node 1: generate()
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def generate(self, state: "AgentState") -> dict:
+    def generate(self, state: AgentState) -> dict:
         """
         LangGraph node: build context window and call LLM for answer generation.
 
@@ -358,7 +358,7 @@ class AnswerGenerator:
             )
 
         # LLM call — this is the primary cost center in the pipeline
-        from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+        from app.services.rate_limiter import estimate_tokens, groq_rate_limiter
         groq_rate_limiter.acquire(estimate_tokens(
             system_prompt, user_prompt, max_output_tokens=settings.max_tokens,
         ))
@@ -390,7 +390,7 @@ class AnswerGenerator:
     # LangGraph Node 2: judge()
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def judge(self, state: "AgentState") -> dict:
+    def judge(self, state: AgentState) -> dict:
         """
         LangGraph node: NLI-based faithfulness scoring of draft_answer.
 
@@ -513,7 +513,7 @@ class AnswerGenerator:
         pairs = [(premise, sentence) for sentence in sentences]
 
         t_nli = time.perf_counter()
-        raw_scores = self.nli.predict(pairs, apply_softmax=True)
+        raw_scores = self.nli.predict(pairs, apply_softmax=True)  # type: ignore[arg-type]
         nli_elapsed_ms = (time.perf_counter() - t_nli) * 1000
 
         # raw_scores shape: (n_sentences, 3) — [contradiction, entailment, neutral]
@@ -570,7 +570,7 @@ class AnswerGenerator:
     # LangGraph Conditional Edge: should_retry()
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def should_retry(self, state: "AgentState") -> str:
+    def should_retry(self, state: AgentState) -> str:
         """
         LangGraph conditional edge function called after judge().
 
@@ -603,7 +603,7 @@ class AnswerGenerator:
     # LangGraph Node 3: store_memory()
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def store_memory(self, state: "AgentState") -> dict | None:
+    def store_memory(self, state: AgentState) -> dict | None:
         """
         LangGraph node: persist the approved Q&A turn to Mem0.
 

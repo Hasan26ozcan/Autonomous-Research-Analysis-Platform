@@ -97,21 +97,19 @@ import json
 import logging
 import re
 import time
-from typing import TYPE_CHECKING
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from app.services.llm_client import make_llm
 from pydantic import BaseModel, Field, field_validator
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
 
 from app.core.config import settings
-from app.core.state import QueryType
-from app.core.state import AgentState
+from app.core.state import AgentState, QueryType
+from app.services.llm_client import make_llm
 from app.services.postgres_store import record_memory
 
 logger = logging.getLogger(__name__)
@@ -189,7 +187,8 @@ Example:
 {
   "type": "single",
   "confidence": 0.95,
-  "reason": "The question asks for a specific fact that requires retrieving the relevant document chunk."
+  "reason": "The question asks for a specific fact that requires retrieving "
+  "the relevant document chunk."
 }
 
 Now classify the following question.
@@ -377,7 +376,7 @@ class RouterAgent:
     # LangGraph Node: route()
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def route(self, state: "AgentState") -> dict:
+    def route(self, state: AgentState) -> dict:
         """
         LangGraph node function — the entry point of the query pipeline.
 
@@ -442,7 +441,7 @@ class RouterAgent:
     # LangGraph Conditional Edge: get_route()
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def get_route(self, state: "AgentState") -> str:
+    def get_route(self, state: AgentState) -> str:
         """
         LangGraph conditional edge function.
 
@@ -506,7 +505,7 @@ class RouterAgent:
         After 3 attempts (1s → 2s → 4s backoff), the exception propagates
         to _classify() which catches it and returns the safe fallback.
         """
-        from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+        from app.services.rate_limiter import estimate_tokens, groq_rate_limiter
         groq_rate_limiter.acquire(estimate_tokens(
             ROUTER_SYSTEM_PROMPT, question, max_output_tokens=300,
         ))
@@ -665,7 +664,7 @@ class RouterAgent:
     # Private: Fallback State Update
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def _fallback_update(self, state: "AgentState", t0: float, reason: str) -> dict:
+    def _fallback_update(self, state: AgentState, t0: float, reason: str) -> dict:
         """
         Return a safe fallback state update when the router cannot classify.
 

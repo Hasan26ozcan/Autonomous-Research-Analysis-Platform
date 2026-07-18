@@ -1,0 +1,24 @@
+# Codecov configuration.
+# Docs: https://docs.codecov.com/docs/codecov-yaml
+#
+# This makes Codecov post a comment on every PR reporting how the change
+# moved coverage ("this PR changes coverage by +X% / -X%"), and shows a
+# project + patch status check. The status checks are informational only;
+# they are NOT required by branch protection, so a small drop never blocks
+# a merge.
+
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1% # allow a <=1% change without flagging the status
+    patch:
+      default:
+        target: auto
+        threshold: 1%
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false

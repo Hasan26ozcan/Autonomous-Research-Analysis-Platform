@@ -26,8 +26,20 @@ def pipeline(monkeypatch):
     from app.services import ingest_service as svc
 
     chunks = [
-        {"text": "original one", "doc_id": "docX", "page": 1, "chunk_index": 0, "filename": "f.pdf"},
-        {"text": "original two", "doc_id": "docX", "page": 2, "chunk_index": 1, "filename": "f.pdf"},
+        {
+            "text": "original one",
+            "doc_id": "docX",
+            "page": 1,
+            "chunk_index": 0,
+            "filename": "f.pdf",
+        },
+        {
+            "text": "original two",
+            "doc_id": "docX",
+            "page": 2,
+            "chunk_index": 1,
+            "filename": "f.pdf",
+        },
     ]
 
     monkeypatch.setattr(svc, "chunk_pdf", lambda p: chunks)

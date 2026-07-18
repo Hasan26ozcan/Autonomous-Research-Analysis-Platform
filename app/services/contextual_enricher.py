@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from app.services.llm_client import make_llm
 
 from app.core.config import settings
 from app.core.state import AgentState
+from app.services.llm_client import make_llm
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +124,7 @@ class ContextualEnricher:
     # LangGraph Node Entry Point
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def enrich(self, state: "AgentState") -> dict:
+    def enrich(self, state: AgentState) -> dict:
         """
         LangGraph node: enrich all chunks in state with contextual descriptions.
 
@@ -384,7 +383,7 @@ class ContextualEnricher:
             chunk_text=truncated_chunk,
         )
 
-        from app.services.rate_limiter import groq_rate_limiter, estimate_tokens
+        from app.services.rate_limiter import estimate_tokens, groq_rate_limiter
         # max_output_tokens estimation updated (150 → 512)
         groq_rate_limiter.acquire(estimate_tokens(
             CONTEXT_SYSTEM_PROMPT, user_message, max_output_tokens=512,
@@ -496,7 +495,7 @@ class ContextualEnricher:
 contextual_enricher = ContextualEnricher()
 
 
-def enrich_chunks(state: "AgentState") -> dict:
+def enrich_chunks(state: AgentState) -> dict:
     """
     LangGraph node function — thin wrapper around contextual_enricher.enrich().
 

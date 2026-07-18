@@ -42,11 +42,11 @@ class FakeRow(dict):
 class FakePGCursor:
     """Records executed SQL and returns scripted rows from the owning pool."""
 
-    def __init__(self, pool: "FakePGPool"):
+    def __init__(self, pool: FakePGPool):
         self._pool = pool
         self.executed: list[tuple] = []
 
-    def __enter__(self) -> "FakePGCursor":
+    def __enter__(self) -> FakePGCursor:
         return self
 
     def __exit__(self, *exc: Any) -> bool:
@@ -86,7 +86,7 @@ class FakePGCursor:
 class FakePGConn:
     """A fake psycopg2 connection backed by a FakePGPool."""
 
-    def __init__(self, pool: "FakePGPool"):
+    def __init__(self, pool: FakePGPool):
         self._pool = pool
         self.committed = False
 

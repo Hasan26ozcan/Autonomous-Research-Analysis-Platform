@@ -11,7 +11,7 @@ and the result readers (which index by name) are both satisfied.
 """
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 

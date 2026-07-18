@@ -16,8 +16,9 @@ Usage anywhere in the codebase:
 """
 
 from __future__ import annotations
-from pydantic_settings import BaseSettings
+
 from pydantic import Field
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -182,7 +183,10 @@ class Settings(BaseSettings):
     # 91% lower p95 latency, 90%+ token cost reduction vs full-context.
     # SOTA on multi-hop, temporal, and open-domain memory queries.
     mem0_api_key: str = Field(default="", description="Leave empty for self-hosted")
-    mem0_base_url: str = Field(default="http://localhost:3000", description="Default works for local run; Docker uses host.docker.internal or service URL")
+    mem0_base_url: str = Field(
+        default="http://localhost:3000",
+        description="Default works for local run; Docker uses host.docker.internal or service URL",
+    )
 
     # ── LangSmith — Observability ─────────────────────────────────────────────
     # Traces every LangGraph node: input/output, token counts, latency.

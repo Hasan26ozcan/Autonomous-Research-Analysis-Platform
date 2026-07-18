@@ -1,0 +1,26 @@
+# Dependabot — automated version updates.
+# Enables:
+#   * `pip`          -> keeps requirements.txt dependencies up to date
+#   * `github-actions` -> keeps the CI workflow actions up to date
+#
+# NOTE: Dependabot *security alerts* are enabled separately in
+# Repository Settings -> Code security (they are on by default for public
+# repos). See docs/CI_QUALITY.md for the full walkthrough.
+
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+
+  - package-ecosystem: "github-actions"
+    directory: "/.github/workflows"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "github-actions"

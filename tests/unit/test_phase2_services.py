@@ -18,9 +18,9 @@ Run with:
     pytest tests/unit/test_phase2_services.py -v --tb=short  # shorter tracebacks
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 # =============================================================================
 # PDFChunker tests
@@ -227,8 +227,9 @@ class TestEmbedder:
 
     def test_embed_chunks_node_returns_embeddings_key(self):
         """LangGraph node must return {'embeddings': [...]}."""
-        from app.services.embedder import embed_chunks
         import numpy as np
+
+        from app.services.embedder import embed_chunks
 
         mock_model = MagicMock()
         mock_model.encode.return_value = np.array([[0.1, 0.2], [0.3, 0.4]])
@@ -299,7 +300,6 @@ class TestVectorStore:
 
     def test_search_applies_doc_id_filter(self):
         """search() with doc_id must pass a filter to Qdrant."""
-        from qdrant_client.models import Filter
         store, mock_client = self._make_store()
         mock_client.search.return_value = []
 

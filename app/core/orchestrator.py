@@ -88,33 +88,32 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
-from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.graph import END, StateGraph
 
-from app.core.config import settings
-from app.core.state import AgentState
-from app.services.llm_client import make_llm
-
-# ── Phase 4: Adaptive Router ───────────────────────────────────────────────────
-from app.agents.router import router_agent
-
-# ── Phase 5: Retrieval Agent ───────────────────────────────────────────────────
-from app.agents.retrieval_agent import retrieval_agent
+# ── Phase 7: Generator + Judge + Memory Store ─────────────────────────────────
+from app.agents.generator import generator
 
 # ── Phase 6: Knowledge Graph Agent ────────────────────────────────────────────
 from app.agents.graph_agent import kg_agent
 
-# ── Phase 7: Generator + Judge + Memory Store ─────────────────────────────────
-from app.agents.generator import generator
+# ── Phase 5: Retrieval Agent ───────────────────────────────────────────────────
+from app.agents.retrieval_agent import retrieval_agent
+
+# ── Phase 4: Adaptive Router ───────────────────────────────────────────────────
+from app.agents.router import router_agent
+from app.core.config import settings
+from app.core.state import AgentState
+from app.services.bm25_index import index_chunks
 
 # ── Phase 2 + Phase 3: Service node functions ─────────────────────────────────
 from app.services.chunker import chunk_document
 from app.services.contextual_enricher import enrich_chunks
 from app.services.embedder import embed_chunks
+from app.services.llm_client import make_llm
 from app.services.vector_store import store_chunks
-from app.services.bm25_index import index_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +202,7 @@ def direct_answer(state: AgentState) -> dict:
         )),
         HumanMessage(content=prompt),
     ])
-    answer = response.content.strip()
+    answer = response.content.strip() if isinstance(response.content, str) else ""
 
     return {
         "answer":            answer,
@@ -509,8 +508,8 @@ class ARAPOrchestrator:
         # Best-effort audit log - never blocks or fails the response.
         # These are synchronous (psycopg2) and best-effort.
         from app.services.postgres_store import (
-            record_document,
             record_chunk_metadata,
+            record_document,
             update_document_status,
         )
         update_document_status(result["doc_id"], "processing")
@@ -573,8 +572,8 @@ class ARAPOrchestrator:
         # Phase 9: reset the process-wide token counter so the count returned
         # at the end reflects only THIS query's LLM calls.
         from app.services.llm_client import (
-            reset_token_usage,
             get_and_reset_token_usage,
+            reset_token_usage,
         )
         reset_token_usage()
 

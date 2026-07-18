@@ -18,10 +18,7 @@ Covers:
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from app.services.rate_limiter import SlidingWindowRateLimiter, estimate_tokens
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # estimate_tokens

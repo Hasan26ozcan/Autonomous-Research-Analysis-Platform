@@ -1,25 +1,27 @@
 import os
 import tempfile
-from typing import List, Dict, Any
+from typing import Any
 
+from app.agents.graph_agent import kg_agent
+from app.core.config import settings
+from app.core.logging import logger
+from app.services.bm25_index import bm25_index
 from app.services.chunker import chunk_pdf, pdf_page_count
 from app.services.contextual_enricher import enrich_chunk
 from app.services.embedder import embedder
-from app.services.vector_store import vector_store
-from app.services.bm25_index import bm25_index
-from app.agents.graph_agent import kg_agent
+from app.services.log_store import log_worker
 from app.services.postgres_store import (
-    record_document,
     record_chunk_metadata,
+    record_document,
     update_document_status,
 )
-from app.services.redis_cache import pipeline_state_set, pipeline_state_clear
-from app.services.log_store import log_worker
-from app.core.config import settings
-from app.core.logging import logger
+from app.services.redis_cache import pipeline_state_clear, pipeline_state_set
+from app.services.vector_store import vector_store
 
 
-def run_ingest_pipeline(file_content: bytes, filename: str, user_id: str = "default") -> Dict[str, Any]:
+def run_ingest_pipeline(
+    file_content: bytes, filename: str, user_id: str = "default"
+) -> dict[str, Any]:
     """
     Full synchronous ingest pipeline – runs inside Celery worker.
 
@@ -53,7 +55,9 @@ def run_ingest_pipeline(file_content: bytes, filename: str, user_id: str = "defa
         # 2. Chunking
         chunks = chunk_pdf(temp_path)
         if not chunks:
-            logger.warning(f"No chunks extracted from {filename} – document may be empty or unreadable.")
+            logger.warning(
+                f"No chunks extracted from {filename} – document may be empty or unreadable."
+            )
             return {
                 "status": "error",
                 "doc_id": "unknown",

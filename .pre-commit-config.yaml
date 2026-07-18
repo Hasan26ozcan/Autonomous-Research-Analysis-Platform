@@ -1,0 +1,40 @@
+# Pre-commit hooks — run automatically on every `git commit` (BEFORE the
+# change is committed) so quality problems are caught locally instead of
+# only in CI.
+#
+# One-time install (after `pip install pre-commit`):
+#     pre-commit install
+#
+# Run manually on the whole repo:
+#     pre-commit run --all-files
+#
+# The exact same checks also run in CI via the `pre-commit` job in
+# .github/workflows/ci.yml, so they cannot be skipped by pushing from a
+# machine without the hook installed.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+        # resolved.yml is a generated GitLab-style pipeline file that uses
+        # custom `!reference` tags which check-yaml cannot parse.
+        exclude: ^resolved\.yml$
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+        # `hf_cache/` holds downloaded model weights (tens of MB) that are
+        # already tracked in the repo; don't block on their size.
+        exclude: ^hf_cache/
+      - id: check-merge-conflict
+      - id: debug-statements
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        # Lint only (no auto-fix) so issues are surfaced for you to address.
+        # Add `args: [--fix]` here later if you want safe fixes applied
+        # automatically on commit.

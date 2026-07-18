@@ -13,8 +13,9 @@ get_pool() itself is also tested: it lazily builds a real pool when psycopg2
 can connect and returns None (caching the failure) when it cannot.
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from tests.pg_helpers import FakeRow, make_pool
 

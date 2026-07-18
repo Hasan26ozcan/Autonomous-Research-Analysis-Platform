@@ -80,19 +80,19 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
+from celery.result import AsyncResult
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from celery.result import AsyncResult
 
+from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.orchestrator import orchestrator
-from app.services.tasks import ingest_document_task
-from app.core.celery_app import celery_app
-from evaluation.ragas_eval import run_ragas_evaluation
-from app.services.log_store import log_api
 from app.services import analytics as analytics_service
+from app.services.log_store import log_api
+from app.services.tasks import ingest_document_task
+from evaluation.ragas_eval import run_ragas_evaluation
 
 logging.basicConfig(
     level=logging.INFO,
@@ -124,8 +124,8 @@ def _bm25_reload_listener() -> None:
             if message.get("type") == "message":
                 try:
                     logger.info("BM25 reload signal received — rebuilding from Qdrant")
-                    from app.services.vector_store import vector_store
                     from app.services.bm25_index import bm25_index
+                    from app.services.vector_store import vector_store
                     bm25_index.load_from_qdrant(vector_store.client, settings.qdrant_collection)
                     logger.info(
                         "BM25 index reloaded from Qdrant (%d chunks).", bm25_index.size
@@ -176,8 +176,8 @@ async def lifespan(app: FastAPI):
     # process, so the API's own BM25 would otherwise stay empty and hybrid
     # retrieval would silently degrade to dense-only. Best-effort, non-fatal.
     try:
-        from app.services.vector_store import vector_store
         from app.services.bm25_index import bm25_index
+        from app.services.vector_store import vector_store
         bm25_index.load_from_qdrant(vector_store.client, settings.qdrant_collection)
         logger.info("BM25 index loaded from Qdrant (%d chunks).", bm25_index.size)
     except Exception as e:  # pragma: no cover - depends on Qdrant availability
@@ -426,7 +426,7 @@ async def ingest_document(file: UploadFile = File(...), user_id: str = "default"
         raise HTTPException(
             status_code=500,
             detail="Ingestion queue is temporarily unavailable. Please try again later.",
-        )
+        ) from exc
 
     logger.info("Ingest task queued: task_id=%s, filename=%s", task.id, filename)
 
@@ -449,7 +449,7 @@ async def get_ingest_status(task_id: str):
       - FAILURE   : failed (error field contains exception message)
     """
     task_result = AsyncResult(task_id, app=celery_app)
-    
+
     response = {
         "task_id": task_id,
         "status": task_result.status,
@@ -512,7 +512,7 @@ async def query(req: QueryRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Query failed: {str(e)[:200]}",
-        )
+        ) from e
 
 
 @app.post("/eval", tags=["Evaluation"])
@@ -545,7 +545,7 @@ async def eval_endpoint(req: EvalRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Evaluation failed: {str(e)[:200]}",
-        )
+        ) from e
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -644,7 +644,8 @@ async function loadAll() {
       ['Avg recall', fmt(s.avg_recall)],
     ];
     document.getElementById('cards').innerHTML = cards.map(
-      c => `<div class="card"><div class="label">${c[0]}</div><div class="value">${c[1]}</div></div>`
+      c => `<div class="card"><div class="label">${c[0]}</div>`
+         + `<div class="value">${c[1]}</div></div>`
     ).join('');
 
     const docs = await (await fetch('/analytics/documents')).json();

@@ -18,9 +18,7 @@ Run:
     pytest tests/unit/test_phase3_enricher.py -v
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
-
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
@@ -119,7 +117,7 @@ class TestOutputStructureIntegrity:
         """word_count reflects the ORIGINAL chunk, not the enriched version."""
         chunks = make_chunks(2)
         result = self.enricher.enrich({"chunks": chunks})
-        for orig, enriched in zip(chunks, result["chunks"]):
+        for orig, enriched in zip(chunks, result["chunks"], strict=False):
             assert enriched["word_count"] == orig["word_count"]
 
     def test_returns_dict_with_chunks_key(self):

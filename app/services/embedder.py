@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING
 
 from app.core.config import settings
 
@@ -220,7 +219,7 @@ class Embedder:
 embedder = Embedder()
 
 
-def embed_chunks(state: "AgentState") -> dict:
+def embed_chunks(state: AgentState) -> dict:
     """
     LangGraph node function for the ingest pipeline.
 

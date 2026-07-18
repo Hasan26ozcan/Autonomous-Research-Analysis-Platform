@@ -37,7 +37,6 @@ import json
 import logging
 from typing import Any
 
-import psycopg2
 from psycopg2 import pool as pg_pool
 
 from app.core.config import settings

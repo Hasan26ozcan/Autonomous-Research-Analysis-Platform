@@ -22,11 +22,10 @@ Run:
     pytest tests/unit/test_phase8_orchestrator.py -v
 """
 
-import pytest
 import json
-import asyncio
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Fixtures
@@ -68,7 +67,8 @@ def make_async_client():
     Build an httpx.AsyncClient targeting the FastAPI app.
     Patches orchestrator so no real infrastructure is needed.
     """
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     from app.api.main import app
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
@@ -194,7 +194,6 @@ class TestDirectAnswer:
         assert "flood prediction" in human_msg.content
 
     def test_skips_memory_section_when_no_memories(self):
-        from langchain_core.messages import HumanMessage
 
         _, mock_instance = self._run(
             {"question": "What is RAG?", "long_term_memories": []}
@@ -269,7 +268,6 @@ class TestOrchestratorIngest:
 
     @pytest.mark.asyncio
     async def test_returns_kg_triples_count(self):
-        from app.agents.graph_agent import Triple
         final = make_final_state(kg_entities=[
             {"head": "A", "relation": "r", "tail": "B", "confidence": 0.9},
             {"head": "C", "relation": "r", "tail": "D", "confidence": 0.8},
@@ -629,8 +627,8 @@ class TestWebSocket:
 
     async def _make_ws_client(self):
         """httpx WebSocket client via ASGI transport."""
-        from httpx_ws import aconnect_ws
-        from httpx import AsyncClient, ASGITransport
+        from httpx import ASGITransport, AsyncClient
+
         from app.api.main import app
         transport = ASGITransport(app=app)
         client = AsyncClient(transport=transport, base_url="http://test")
@@ -650,6 +648,7 @@ class TestWebSocket:
     async def test_websocket_sends_update_events(self):
         """Each LangGraph node must produce a 'type: update' event to the client."""
         from fastapi.testclient import TestClient
+
         from app.api.main import app
 
         stream_events = [
@@ -683,6 +682,7 @@ class TestWebSocket:
     async def test_websocket_done_contains_answer(self):
         """The final 'done' message must contain the answer field."""
         from fastapi.testclient import TestClient
+
         from app.api.main import app
 
         stream_events = [
@@ -711,6 +711,7 @@ class TestWebSocket:
     async def test_websocket_sends_error_on_invalid_json(self):
         """Malformed JSON from client must produce error message, not disconnect."""
         from fastapi.testclient import TestClient
+
         from app.api.main import app
 
         with patch("app.api.main.orchestrator"):
@@ -726,6 +727,7 @@ class TestWebSocket:
     async def test_websocket_sends_error_on_empty_question(self):
         """Empty question must return error without calling pipeline."""
         from fastapi.testclient import TestClient
+
         from app.api.main import app
 
         with patch("app.api.main.orchestrator.stream_query") as mock_stream:
@@ -744,6 +746,7 @@ class TestWebSocket:
         The client receives an error message and can send another question.
         """
         from fastapi.testclient import TestClient
+
         from app.api.main import app
 
         async def _failing_stream(*args, **kwargs):
@@ -803,7 +806,7 @@ class TestGraphWiring:
         assert g1 is g2
 
     def test_singleton_is_arap_orchestrator_instance(self):
-        from app.core.orchestrator import orchestrator, ARAPOrchestrator
+        from app.core.orchestrator import ARAPOrchestrator, orchestrator
         assert isinstance(orchestrator, ARAPOrchestrator)
 
 
@@ -859,6 +862,7 @@ class TestLangSmithTracing:
         settings and reload the module to exercise it."""
         import importlib
         import os
+
         from app.core import orchestrator
 
         monkeypatch.setattr(orchestrator.settings, "langchain_tracing_v2", True)
@@ -904,8 +908,7 @@ class TestStreamQuery:
         ]
 
         def _fake_stream(*args, **kwargs):
-            for ev in raw_events:
-                yield ev
+            yield from raw_events
 
         orc._query_graph = MagicMock()
         orc._query_graph.stream.side_effect = _fake_stream
@@ -957,7 +960,7 @@ class TestEvalEndpoint:
 
     @pytest.mark.asyncio
     async def test_eval_returns_report(self):
-        from app.api.main import eval_endpoint, EvalRequest
+        from app.api.main import EvalRequest, eval_endpoint
         report = {"run_id": 1, "faithfulness": 0.9}
         with patch("app.api.main.run_ragas_evaluation", new=AsyncMock(return_value=report)):
             resp = await eval_endpoint(EvalRequest(limit=5, no_seed=False))
@@ -965,8 +968,9 @@ class TestEvalEndpoint:
 
     @pytest.mark.asyncio
     async def test_eval_500_on_failure(self):
-        from app.api.main import eval_endpoint, EvalRequest
         from fastapi import HTTPException
+
+        from app.api.main import EvalRequest, eval_endpoint
         with patch("app.api.main.run_ragas_evaluation",
                    new=AsyncMock(side_effect=RuntimeError("eval died"))):
             with pytest.raises(HTTPException) as exc:
@@ -1013,7 +1017,7 @@ class TestLifespan:
     async def test_startup_runs_full_warmup_and_load(self):
         """Covers lifespan.py 162 (warmup), 168-170 (graph compile),
         178-182 (BM25 load + success log)."""
-        from app.api.main import lifespan, app
+        from app.api.main import app, lifespan
 
         emb = MagicMock()
         emb.warmup = MagicMock()
@@ -1040,7 +1044,7 @@ class TestLifespan:
     async def test_startup_warmup_failure_is_non_fatal(self):
         """Embedding warmup failure must be caught (lifespan.py 163-164)
         and startup must continue."""
-        from app.api.main import lifespan, app
+        from app.api.main import app, lifespan
 
         emb = MagicMock()
         emb.warmup.side_effect = RuntimeError("no model")
@@ -1064,7 +1068,7 @@ class TestLifespan:
     @pytest.mark.asyncio
     async def test_startup_graph_compile_failure_is_logged(self):
         """Graph compilation failure must be caught (lifespan.py 171-172)."""
-        from app.api.main import lifespan, app
+        from app.api.main import app, lifespan
 
         emb = MagicMock()
         emb.warmup = MagicMock()
@@ -1120,8 +1124,9 @@ class TestWebSocketDirect:
     async def test_collects_sources_and_emits_done(self):
         """WebSocket final_sources accumulation (main.py 745) + consolidated
         'done' message (752-758)."""
-        from app.api.main import websocket_query
         from fastapi import WebSocketDisconnect
+
+        from app.api.main import websocket_query
 
         ws = MagicMock()
         ws.accept = AsyncMock()

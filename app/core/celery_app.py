@@ -5,6 +5,7 @@ Celery application instance — shared between API (for sending tasks)
 and worker (for executing tasks).
 """
 from celery import Celery
+
 from app.core.config import settings
 
 # Create the Celery application instance

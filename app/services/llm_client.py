@@ -53,7 +53,6 @@ from langchain_openai import ChatOpenAI
 from app.core.config import settings
 from app.services.redis_cache import llm_cache_get, llm_cache_set
 
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Token usage accumulator (Phase 9)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -155,7 +154,7 @@ def make_llm(
     request_timeout: int | None = None,
     response_format: Any | None = None,
     use_cache: bool = False,
-) -> ChatOpenAI:
+) -> _LLMWrapper:
     """
     Build a ChatOpenAI client with ARAP's shared, 429-resilient defaults.
 
@@ -186,9 +185,9 @@ def make_llm(
     if response_format is not None:
         kwargs["response_format"] = response_format
 
-    client = ChatOpenAI(
+    client = ChatOpenAI(  # type: ignore[call-arg]
         model=model or settings.llm_model,
-        api_key=settings.openai_api_key,
+        api_key=settings.openai_api_key,  # type: ignore[arg-type]
         base_url=settings.llm_base_url,
         temperature=temperature if temperature is not None else settings.temperature,
         max_retries=max_retries if max_retries is not None else settings.llm_max_retries,

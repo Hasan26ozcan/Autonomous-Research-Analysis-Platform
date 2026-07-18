@@ -1,0 +1,25 @@
+# Ruff — fast Python linter and import sorter.
+# Replaces flake8 + isort + pyupgrade in a single tool.
+# Docs: https://docs.astral.sh/ruff/
+#
+# This is the starting, high-signal rule set. Additional rule families
+# (C4 comprehensions, SIM simplify, RUF ruff-specific, PTH pathlib, N
+# naming, RET returns, BLE blind-except, TCH type-checking) can be added
+# later once the existing findings have been worked through.
+
+line-length = 100
+target-version = "py311"
+
+[lint]
+# Rule families:
+#   E  - pycodestyle errors (syntax / style issues)
+#   W  - pycodestyle warnings
+#   F  - pyflakes (unused imports, undefined names, redefinitions, ...)
+#   I  - isort (import ordering + unused-import detection)
+#   UP - pyupgrade (modernize Python syntax)
+#   B  - flake8-bugbear (likely bugs / common footguns)
+select = ["E", "F", "I", "W", "UP", "B"]
+
+# B008 (function call in default argument) is a false-positive for FastAPI
+# `Depends()` / `Security()` defaults, which is how this project wires deps.
+ignore = ["B008"]

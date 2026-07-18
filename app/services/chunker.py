@@ -43,10 +43,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import os
 import re
-import logging
-from typing import TYPE_CHECKING, List, Dict, Any
+from typing import Any
 
 from app.core.config import settings
 
@@ -166,7 +166,7 @@ class PDFChunker:
         try:
             import fitz  # PyMuPDF
         except ImportError:
-            raise RuntimeError("PyMuPDF not installed. Run: pip install pymupdf")
+            raise RuntimeError("PyMuPDF not installed. Run: pip install pymupdf") from None
         with fitz.open(stream=io.BytesIO(pdf_bytes), filetype="pdf") as doc:
             return doc.page_count
 
@@ -189,7 +189,7 @@ class PDFChunker:
         except ImportError:
             raise RuntimeError(
                 "PyMuPDF not installed. Run: pip install pymupdf"
-            )
+            ) from None
 
         pages = []
         with fitz.open(stream=io.BytesIO(pdf_bytes), filetype="pdf") as doc:
@@ -329,7 +329,7 @@ _chunker = PDFChunker()
 
 # ── LangGraph node function ────────────────────────────────────────────────────
 
-def chunk_document(state: "AgentState") -> dict:
+def chunk_document(state: AgentState) -> dict:
     """
     LangGraph node function for the ingest pipeline.
 
@@ -365,7 +365,7 @@ def chunk_document(state: "AgentState") -> dict:
 
 # ── Top‑level convenience function for external use ───────────────────────────
 
-def chunk_pdf(pdf_path: str) -> List[Dict[str, Any]]:
+def chunk_pdf(pdf_path: str) -> list[dict[str, Any]]:
     """
     Convenience function to chunk a PDF file from a filesystem path.
 

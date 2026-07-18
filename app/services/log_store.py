@@ -104,7 +104,7 @@ def log_pipeline_batch(
     rows = [
         (session_id, str(node), float(ms), query_type)
         for node, ms in latency.items()
-        if isinstance(ms, (int, float))
+        if isinstance(ms, int | float)
     ]
     if not rows:
         return

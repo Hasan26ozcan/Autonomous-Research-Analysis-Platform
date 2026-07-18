@@ -21,10 +21,10 @@ Run:
     pytest tests/unit/test_phase6_graph_agent.py -v
 """
 
-import pytest
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Fixtures & Helpers
@@ -94,21 +94,24 @@ class TestTripleModel:
         assert t.confidence == 0.9
 
     def test_empty_head_rejected(self):
-        from app.agents.graph_agent import Triple
         from pydantic import ValidationError
+
+        from app.agents.graph_agent import Triple
         with pytest.raises(ValidationError):
             Triple(head="", relation="cites", tail="X", confidence=0.8)
 
     def test_confidence_above_one_rejected(self):
         """Unlike RouterOutput (which clamps), Triple uses strict ge/le bounds."""
-        from app.agents.graph_agent import Triple
         from pydantic import ValidationError
+
+        from app.agents.graph_agent import Triple
         with pytest.raises(ValidationError):
             Triple(head="A", relation="r", tail="B", confidence=1.5)
 
     def test_confidence_below_zero_rejected(self):
-        from app.agents.graph_agent import Triple
         from pydantic import ValidationError
+
+        from app.agents.graph_agent import Triple
         with pytest.raises(ValidationError):
             Triple(head="A", relation="r", tail="B", confidence=-0.1)
 
@@ -147,7 +150,10 @@ class TestValidateCypher:
 
     def test_valid_read_query_passes(self):
         from app.agents.graph_agent import _validate_cypher
-        cypher = "MATCH (h:Entity)-[r:RELATES_TO]->(t:Entity) RETURN h.name, r.relation, t.name LIMIT 20"
+        cypher = (
+            "MATCH (h:Entity)-[r:RELATES_TO]->(t:Entity) "
+            "RETURN h.name, r.relation, t.name LIMIT 20"
+        )
         is_safe, reason = _validate_cypher(cypher)
         assert is_safe is True
 
@@ -256,20 +262,26 @@ class TestExtractTriplesFromText:
     def test_returns_empty_list_on_json_parse_error(self):
         agent = make_agent_with_mocks()
         agent.extraction_llm.invoke.return_value = MagicMock(content="not valid json at all")
-        result = agent._extract_triples_from_text("A valid long text passage about something important here.")
+        result = agent._extract_triples_from_text(
+            "A valid long text passage about something important here."
+        )
         assert result == []
 
     def test_returns_empty_list_on_llm_exception(self):
         agent = make_agent_with_mocks()
         agent.extraction_llm.invoke.side_effect = ConnectionError("API timeout")
-        result = agent._extract_triples_from_text("A valid long text passage about something important here.")
+        result = agent._extract_triples_from_text(
+            "A valid long text passage about something important here."
+        )
         assert result == []
 
     def test_empty_triples_array_handled_gracefully(self):
         """LLM correctly identifying no relationships must return [] without error."""
         agent = make_agent_with_mocks()
         agent.extraction_llm.invoke.return_value = make_extraction_json([])
-        result = agent._extract_triples_from_text("A long passage with no clear entity relationships at all here.")
+        result = agent._extract_triples_from_text(
+            "A long passage with no clear entity relationships at all here."
+        )
         assert result == []
 
     def test_truncates_long_text_before_extraction(self):
@@ -578,7 +590,11 @@ class TestGraphRetrieveNode:
         agent = make_agent_with_mocks()
         agent.extraction_llm.invoke.return_value = make_entity_json(["FloodNet"])
         agent.cypher_llm.invoke.return_value = MagicMock(
-            content="MATCH (h:Entity)-[r:RELATES_TO]->(t:Entity) WHERE toLower(h.name) CONTAINS toLower('FloodNet') RETURN h.name, r.relation, t.name LIMIT 20"
+            content=(
+                "MATCH (h:Entity)-[r:RELATES_TO]->(t:Entity) "
+                "WHERE toLower(h.name) CONTAINS toLower('FloodNet') "
+                "RETURN h.name, r.relation, t.name LIMIT 20"
+            )
         )
         mock_session = MagicMock()
         mock_session.execute_read.return_value = [
@@ -726,7 +742,7 @@ class TestDownstreamCompatibility:
         json_module.dumps(result["kg_paths"])
 
     def test_singleton_is_knowledge_graph_agent_instance(self):
-        from app.agents.graph_agent import kg_agent, KnowledgeGraphAgent
+        from app.agents.graph_agent import KnowledgeGraphAgent, kg_agent
         assert isinstance(kg_agent, KnowledgeGraphAgent)
 
 
@@ -787,7 +803,6 @@ class TestGraphAgentExtra:
 
     def test_driver_lazy_connect_success(self, monkeypatch):
         from app.agents.graph_agent import KnowledgeGraphAgent
-        from unittest.mock import patch
 
         agent = KnowledgeGraphAgent()
         agent._driver = None  # force the load branch
@@ -802,7 +817,6 @@ class TestGraphAgentExtra:
 
     def test_driver_connectivity_failure_raises(self, monkeypatch):
         from app.agents.graph_agent import KnowledgeGraphAgent
-        from unittest.mock import patch
 
         agent = KnowledgeGraphAgent()
         agent._driver = None
@@ -817,7 +831,6 @@ class TestGraphAgentExtra:
     def test_extract_and_store_logs_failed_chunk(self, monkeypatch):
         """A chunk whose extraction raises is logged and skipped
         (lines 552-554), and the node still returns a list."""
-        from app.agents.graph_agent import KnowledgeGraphAgent
 
         agent = make_agent_with_mocks()
         agent._extract_triples_from_text = MagicMock(
@@ -834,8 +847,9 @@ class TestGraphAgentExtra:
     def test_call_extraction_llm_retries_without_response_format(self):
         """A BadRequestError mentioning response_format falls back to the
         plain LLM (lines 692-701)."""
-        from openai import BadRequestError
         from unittest.mock import MagicMock
+
+        from openai import BadRequestError
 
         # openai SDK 1.x: BadRequestError requires response/body kwargs.
         err = BadRequestError(
@@ -860,9 +874,10 @@ class TestGraphAgentExtra:
         surfaces the failure as a RetryError whose last attempt is the original
         BadRequestError. We assert both: the fallback client is never used, and
         the underlying error is the BadRequestError."""
+        from unittest.mock import MagicMock
+
         from openai import BadRequestError
         from tenacity import RetryError
-        from unittest.mock import MagicMock
 
         err = BadRequestError("totally unrelated", response=MagicMock(), body={})
 
@@ -885,9 +900,7 @@ class TestGraphAgentExtra:
     def test_extract_triples_json_decode_error_returns_empty(self, monkeypatch):
         """If the parser raises json.JSONDecodeError, the handler
         (lines 735-737) returns an empty list."""
-        from app.agents.graph_agent import KnowledgeGraphAgent
         import json
-        from unittest.mock import patch
 
         agent = make_agent_with_mocks()
         with patch(
@@ -902,7 +915,6 @@ class TestGraphAgentExtra:
     def test_extract_triples_generic_exception_returns_empty(self):
         """A non-JSON exception is caught, unwrapped, logged, and
         degrades to an empty list (lines 738-756)."""
-        from app.agents.graph_agent import KnowledgeGraphAgent
 
         agent = make_agent_with_mocks()
         agent.extraction_llm.invoke.side_effect = ValueError("boom")
@@ -916,7 +928,6 @@ class TestGraphAgentExtra:
         ``.exception()`` itself raises, the inner guard (lines 750-751) must
         fall back to the original error instead of propagating. This covers
         the defensive branch that protects the log line from a broken Future."""
-        from app.agents.graph_agent import KnowledgeGraphAgent
 
         class FakeRetryError(Exception):
             def __init__(self, last_attempt):

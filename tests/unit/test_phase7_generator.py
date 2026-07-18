@@ -20,10 +20,9 @@ Run:
     pytest tests/unit/test_phase7_generator.py -v
 """
 
-import pytest
-import numpy as np
 from unittest.mock import MagicMock
 
+import numpy as np
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Fixtures & Helpers
@@ -782,7 +781,7 @@ class TestDownstreamAPICompatibility:
             assert isinstance(val, float)
 
     def test_singleton_is_answer_generator_instance(self):
-        from app.agents.generator import generator, AnswerGenerator
+        from app.agents.generator import AnswerGenerator, generator
         assert isinstance(generator, AnswerGenerator)
 
 
@@ -795,8 +794,9 @@ class TestGeneratorExtra:
     def test_nli_model_lazy_load(self, monkeypatch):
         """First access of the nli_model property loads the NLI
         cross-encoder (generator.py lines 233-243)."""
-        from app.agents.generator import AnswerGenerator
         from unittest.mock import patch
+
+        from app.agents.generator import AnswerGenerator
 
         gen = AnswerGenerator()
         gen._nli_model = None  # force the load branch
@@ -809,9 +809,10 @@ class TestGeneratorExtra:
     def test_mem0_hosted_init(self, monkeypatch):
         """settings.mem0_api_key set → hosted MemoryClient
         (generator.py lines 266-268)."""
+        from unittest.mock import patch
+
         from app.agents.generator import AnswerGenerator
         from app.core.config import settings
-        from unittest.mock import patch
 
         monkeypatch.setattr(settings, "mem0_api_key", "fake-key")
         gen = AnswerGenerator()
@@ -824,9 +825,10 @@ class TestGeneratorExtra:
     def test_mem0_embedded_init_logs(self, monkeypatch):
         """No api key → embedded Memory.from_config; success log
         (line 298) when from_config succeeds."""
+        from unittest.mock import patch
+
         from app.agents.generator import AnswerGenerator
         from app.core.config import settings
-        from unittest.mock import patch
 
         monkeypatch.setattr(settings, "mem0_api_key", None)
         gen = AnswerGenerator()

@@ -41,7 +41,8 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING
+
+from qdrant_client import QdrantClient
 
 from app.core.config import settings
 
@@ -80,7 +81,7 @@ class VectorStore:
         self.port = port
         self.collection = collection
         self.embedding_dim = embedding_dim
-        self._client = None  # lazy-initialized
+        self._client: QdrantClient | None = None  # lazy-initialized
 
     @property
     def client(self):
@@ -133,10 +134,11 @@ class VectorStore:
         """
         from qdrant_client.models import (
             Distance,
-            VectorParams,
             PayloadSchemaType,
+            VectorParams,
         )
 
+        assert self._client is not None
         existing = [c.name for c in self._client.get_collections().collections]
 
         if self.collection not in existing:
@@ -224,7 +226,7 @@ class VectorStore:
                     "word_count":  chunk.get("word_count", 0),
                 },
             )
-            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
+            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings, strict=False))
         ]
 
         # Batch upsert in groups of 100 to avoid HTTP payload size limits
@@ -261,10 +263,10 @@ class VectorStore:
         Returns:
             Number of points deleted.
         """
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
 
         logger.info("Deleting all chunks for doc_id='%s'...", doc_id)
-        result = self.client.delete(
+        self.client.delete(
             collection_name=self.collection,
             points_selector=Filter(
                 must=[
@@ -307,7 +309,7 @@ class VectorStore:
             HNSW search is O(log n) — typically < 10ms for collections
             up to 1 million vectors on commodity hardware.
         """
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
 
         # Build payload filter if doc_id is provided
         query_filter = None
@@ -368,7 +370,7 @@ class VectorStore:
 vector_store = VectorStore()
 
 
-def store_chunks(state: "AgentState") -> dict:
+def store_chunks(state: AgentState) -> dict | None:
     """
     LangGraph node function for the ingest pipeline.
 

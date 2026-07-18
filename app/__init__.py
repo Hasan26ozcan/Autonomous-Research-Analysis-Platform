@@ -7,7 +7,7 @@ namespace for imports such as ``app.agents`` or ``app.core``.
 from __future__ import annotations
 
 from app.agents import AnswerGenerator, KnowledgeGraphAgent, RetrievalAgent, RouterAgent
-from app.core import ARAPOrchestrator, AgentState, QueryType, Settings, settings
+from app.core import AgentState, ARAPOrchestrator, QueryType, Settings, settings
 
 __all__ = [
     "AnswerGenerator",

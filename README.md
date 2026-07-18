@@ -6,6 +6,11 @@
 > **local NLI faithfulness judge** with a retry loop, and **long-term memory** — all orchestrated
 > by two compiled **LangGraph** graphs and served over a **FastAPI** HTTP + WebSocket API.
 
+<p align="center">
+  <img src="https://github.com/Hasan26ozcan/Autonomous-Research-Analysis-Platform/actions/workflows/ci.yml/badge.svg" alt="CI">
+  <img src="https://codecov.io/gh/Hasan26ozcan/Autonomous-Research-Analysis-Platform/branch/main/graph/badge.svg" alt="Coverage">
+</p>
+
 ---
 
 ## Table of Contents
@@ -33,6 +38,7 @@
 - [WebSocket protocol](#websocket-protocol)
 - [Evaluation (RAGAS)](#evaluation-ragas)
 - [Testing](#testing)
+- [Code quality & CI](#code-quality--ci)
 - [Design principles](#design-principles)
 - [Tech stack](#tech-stack)
 - [License](#license)
@@ -507,6 +513,39 @@ pytest --cov=app --cov=evaluation -q
 
 Tests use `pytest-asyncio` (auto mode), `httpx`/`httpx-ws` for the ASGI/WebSocket client, and
 extensive mocking of the LLM/orchestrator so they run without live infrastructure.
+
+---
+
+## Code quality & CI
+
+This repo runs an automated quality gate on every push to `main` and on every PR that targets
+`main` (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+
+| Job | Tool | What it checks | Merge status |
+| --- | --- | --- | --- |
+| `unit-tests` | pytest + pytest-cov | Unit suite + coverage | **Required** (blocks merge) |
+| `lint` | [Ruff](https://docs.astral.sh/ruff/) | Style, unused imports, undefined names, pyupgrade | Informational |
+| `type-check` | [mypy](https://mypy-lang.org/) | Static type hints | Informational |
+| `security` | [pip-audit](https://pypi.org/project/pip-audit/) | Known vulnerabilities in `requirements.txt` | Informational |
+| `pre-commit` | [pre-commit](https://pre-commit.com/) | Same hooks as the local git hook | Informational |
+
+Coverage is uploaded to [Codecov](https://codecov.io/) and a per-PR comment reports the change
+("this PR increases/decreases coverage by X%"). The CI and coverage badges at the top of this
+README reflect the latest `main` run.
+
+**Local setup (recommended):** install the pre-commit hook so the same checks run *before every
+commit*, catching issues on your machine instead of only in CI:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+[Dependabot](https://docs.github.com/en/code-security/dependabot) keeps `requirements.txt` and the
+GitHub Actions used by the workflow up to date (`.github/dependabot.yml`). The full walkthrough —
+including how to enable Dependabot security alerts, configure branch protection so `main` can't be
+merged with a red test suite, and promote the informational jobs to required — lives in
+[`docs/CI_QUALITY.md`](docs/CI_QUALITY.md).
 
 ---
 

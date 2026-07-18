@@ -55,7 +55,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING
 
 from app.core.config import settings
 
@@ -117,7 +116,11 @@ class BM25Index:
                 "chunk_index": chunk.get("chunk_index", 0),
             })
         self._dirty = True
-        logger.debug("BM25: added %d chunks. Total corpus: %d", len(chunks), len(self._corpus_tokens))
+        logger.debug(
+            "BM25: added %d chunks. Total corpus: %d",
+            len(chunks),
+            len(self._corpus_tokens),
+        )
 
     def remove_by_doc(self, doc_id: str) -> int:
         """
@@ -137,12 +140,12 @@ class BM25Index:
         # Keep only chunks NOT belonging to this doc_id
         paired = [
             (tokens, meta)
-            for tokens, meta in zip(self._corpus_tokens, self._corpus_meta)
+            for tokens, meta in zip(self._corpus_tokens, self._corpus_meta, strict=False)
             if meta.get("doc_id") != doc_id
         ]
 
         if paired:
-            self._corpus_tokens, self._corpus_meta = zip(*paired)
+            self._corpus_tokens, self._corpus_meta = zip(*paired, strict=False)
             self._corpus_tokens = list(self._corpus_tokens)
             self._corpus_meta = list(self._corpus_meta)
         else:
@@ -276,7 +279,7 @@ class BM25Index:
 
         # Pair scores with metadata, apply doc_id filter
         scored: list[tuple[float, dict]] = []
-        for score, meta in zip(all_scores, self._corpus_meta):
+        for score, meta in zip(all_scores, self._corpus_meta, strict=False):
             if score <= 0.0:
                 continue  # skip documents with zero relevance
             if doc_id and meta.get("doc_id") != doc_id:
@@ -319,7 +322,7 @@ class BM25Index:
         try:
             from rank_bm25 import BM25Okapi
         except ImportError:
-            raise RuntimeError("rank_bm25 not installed. Run: pip install rank-bm25")
+            raise RuntimeError("rank_bm25 not installed. Run: pip install rank-bm25") from None
 
         t0 = time.perf_counter()
         self._bm25 = BM25Okapi(self._corpus_tokens)
@@ -373,7 +376,7 @@ class BM25Index:
 bm25_index = BM25Index()
 
 
-def index_chunks(state: "AgentState") -> dict:
+def index_chunks(state: AgentState) -> dict | None:
     """
     LangGraph node function for the ingest pipeline.
 
@@ -405,7 +408,11 @@ def index_chunks(state: "AgentState") -> dict:
     if doc_id:
         removed = bm25_index.remove_by_doc(doc_id)
         if removed:
-            logger.info("BM25: removed %d stale chunks for doc_id=%s before re-indexing", removed, doc_id)
+            logger.info(
+                "BM25: removed %d stale chunks for doc_id=%s before re-indexing",
+                removed,
+                doc_id,
+            )
 
     bm25_index.add_chunks(chunks)
     logger.info("BM25: indexed %d chunks. Total corpus size: %d", len(chunks), bm25_index.size)

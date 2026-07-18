@@ -20,10 +20,9 @@ Run:
     pytest tests/unit/test_phase5_retrieval.py -v
 """
 
-import pytest
-import numpy as np
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Fixtures & Helpers
@@ -99,7 +98,9 @@ def make_agent_with_mocks(
     mock_vs.search.return_value = dense_results if dense_results is not None else make_chunks(5)
 
     mock_bm25 = MagicMock()
-    mock_bm25.search.return_value = bm25_results if bm25_results is not None else make_chunks(3, "bm25")
+    mock_bm25.search.return_value = (
+        bm25_results if bm25_results is not None else make_chunks(3, "bm25")
+    )
 
     mock_embedder = MagicMock()
     mock_embedder.embed_single.return_value = [0.1] * 384
@@ -250,7 +251,8 @@ class TestDecomposeQuestion:
         """Lines with fewer than 5 words are artifacts — must be filtered."""
         self.agent.llm = MagicMock()
         self.agent.llm.invoke.return_value = MagicMock(
-            content="What are the main findings of this research paper?\nOK\n\nWhat methodology was used?"
+            content="What are the main findings of this research paper?\nOK\n\n"
+            "What methodology was used?"
         )
         result = self.agent._decompose_question("Complex question here")
         # "OK" and empty line must be filtered
@@ -353,8 +355,16 @@ class TestRRFMerge:
         dense_score  = 0.7 × 1/(60+1) = 0.01148
         bm25_score   = 0.3 × 1/(60+1) = 0.00492
         """
-        dense_chunk = make_chunk(text="Dense exclusive content A B C D E F G H I J", chunk_index=10, source="dense")
-        bm25_chunk  = make_chunk(text="BM25 exclusive content K L M N O P Q R S T", chunk_index=11, source="bm25")
+        dense_chunk = make_chunk(
+            text="Dense exclusive content A B C D E F G H I J",
+            chunk_index=10,
+            source="dense",
+        )
+        bm25_chunk = make_chunk(
+            text="BM25 exclusive content K L M N O P Q R S T",
+            chunk_index=11,
+            source="bm25",
+        )
 
         result = self.agent._rrf_merge([dense_chunk], [bm25_chunk], top_k=2)
         # Dense chunk must rank first (higher weight)
@@ -415,7 +425,8 @@ class TestRerank:
             {
                 **make_chunk("text"),
                 "original_text": "The actual clean content without context prefix.",
-                "text": "[Context: Generated context.]\n\nThe actual clean content without context prefix.",
+                "text": "[Context: Generated context.]\n\n"
+                "The actual clean content without context prefix.",
             }
         ]
         self.mock_ce.predict.return_value = np.array([0.85])
@@ -769,7 +780,7 @@ class TestDownstreamCompatibility:
             assert "doc_id" in chunk
 
     def test_singleton_is_retrieval_agent_instance(self):
-        from app.agents.retrieval_agent import retrieval_agent, RetrievalAgent
+        from app.agents.retrieval_agent import RetrievalAgent, retrieval_agent
         assert isinstance(retrieval_agent, RetrievalAgent)
 
 
@@ -782,8 +793,9 @@ class TestRetrievalAgentExtra:
     def test_cross_encoder_lazy_load(self, monkeypatch):
         """First access of the cross_encoder property loads the model
         (retrieval_agent.py lines 242-249) when not yet initialized."""
-        from app.agents.retrieval_agent import RetrievalAgent
         from unittest.mock import patch
+
+        from app.agents.retrieval_agent import RetrievalAgent
 
         agent = RetrievalAgent()
         agent._cross_encoder = None  # force the load branch

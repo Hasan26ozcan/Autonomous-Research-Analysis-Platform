@@ -22,11 +22,10 @@ Run:
     pytest tests/unit/test_phase4_router.py -v
 """
 
-import pytest
 import json
-import time
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
+import pytest
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Fixtures
@@ -132,8 +131,9 @@ class TestRouterOutput:
         Any type not in ('direct', 'single', 'multi_hop', 'graph') must fail.
         This catches LLM hallucinations like "complex" or "vector_search".
         """
-        from app.agents.router import RouterOutput
         from pydantic import ValidationError
+
+        from app.agents.router import RouterOutput
         with pytest.raises(ValidationError):
             RouterOutput(type="complex", confidence=0.9, reason="Invalid type.")
 
@@ -313,8 +313,9 @@ class TestClassify:
 
     def test_classify_passes_question_in_human_message(self):
         """The user's question must appear in the HumanMessage sent to LLM."""
-        from app.agents.router import RouterAgent
         from langchain_core.messages import HumanMessage
+
+        from app.agents.router import RouterAgent
         agent = RouterAgent()
         agent.llm = MagicMock()
         agent.llm.invoke.return_value = make_llm_response()
@@ -529,7 +530,7 @@ class TestEdgeCases:
 
     def test_singleton_is_router_agent_instance(self):
         """Module-level router_agent must be a RouterAgent instance."""
-        from app.agents.router import router_agent, RouterAgent
+        from app.agents.router import RouterAgent, router_agent
         assert isinstance(router_agent, RouterAgent)
 
 
@@ -552,7 +553,6 @@ class TestDownstreamCompatibility:
         Phase 5 agents use query_type to decide retrieval strategy.
         An invalid value would cause Phase 5 to fall back silently.
         """
-        from app.core.state import QueryType
         valid = {"direct", "single", "multi_hop", "graph"}
 
         for qt in valid:
@@ -607,8 +607,8 @@ class TestMem0ClientInit:
 
     def test_hosted_mem0_client_init(self, monkeypatch):
         """settings.mem0_api_key set → hosted MemoryClient (lines 316-318)."""
-        from app.core.config import settings
         from app.agents.router import RouterAgent
+        from app.core.config import settings
 
         monkeypatch.setattr(settings, "mem0_api_key", "fake-hosted-key")
         agent = RouterAgent()
@@ -621,8 +621,8 @@ class TestMem0ClientInit:
     def test_embedded_mem0_client_init_logs_success(self, monkeypatch):
         """No api key → embedded Memory.from_config; success log (line 363)
         is reached only when from_config succeeds (existing tests let it raise)."""
-        from app.core.config import settings
         from app.agents.router import RouterAgent
+        from app.core.config import settings
 
         monkeypatch.setattr(settings, "mem0_api_key", None)
         agent = RouterAgent()

@@ -1,7 +1,8 @@
 from celery import shared_task
+
 from app.core.celery_app import celery_app
-from app.services.ingest_service import run_ingest_pipeline
 from app.core.logging import logger
+from app.services.ingest_service import run_ingest_pipeline
 
 
 @celery_app.task(name="app.services.tasks.ping")
