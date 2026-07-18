@@ -27,7 +27,7 @@ sentence-transformers==3.2.1
 # ── Vector store / lexical search / graph DB ─────────────────────────────
 qdrant-client==1.12.0
 rank-bm25==0.2.2
-neo4j==5.25.0
+neo4j==6.2.0
 
 # ── Long-term memory ──────────────────────────────────────────────────────
 mem0ai==0.1.29
