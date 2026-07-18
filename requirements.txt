@@ -7,7 +7,7 @@ python-multipart==0.0.12
 websockets==13.1
 
 # ── LangGraph / LangChain orchestration ──────────────────────────────────
-langgraph==0.2.50
+langgraph==1.2.9
 langgraph-checkpoint-redis==0.0.6
 langchain==0.3.7
 langchain-openai==0.2.10
