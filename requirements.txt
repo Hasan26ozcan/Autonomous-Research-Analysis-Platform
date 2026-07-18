@@ -332,7 +332,7 @@ qdrant-client==1.18.0
     #   mem0ai
 rank-bm25==0.2.2
     # via -r requirements.in
-redis==6.4.0
+redis==8.0.1
     # via
     #   -r requirements.in
     #   kombu
