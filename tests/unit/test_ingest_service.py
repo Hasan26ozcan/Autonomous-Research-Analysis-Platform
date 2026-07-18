@@ -102,13 +102,23 @@ def test_run_ingest_pipeline_success(pipeline):
     pipeline["notify"].assert_called_once()
 
     # Postgres metadata saved with the right counts.
+    # The parent `documents` row must be created FIRST (status
+    # "processing") so the `document_chunks` rows — which have a
+    # foreign key to documents(doc_id) — can be written without
+    # violating the constraint; the document is then flipped to "ready".
     pipeline["record_document"].assert_called_once()
     args, kwargs = pipeline["record_document"].call_args
-    assert kwargs["status"] == "ready"
+    assert kwargs["status"] == "processing"
     assert kwargs["total_pages"] == 5
     # call signature: (doc_id, filename, chunk_count, kg_triples, ...)
     assert args[2] == 2
     assert args[3] == 2
+    # Document flipped to "ready" after chunks are persisted.
+    # (update_document_status is also called with "processing" earlier in
+    # _prepare_document, so assert the final "ready" flip occurred.)
+    assert ("docX", "ready") in [
+        c.args[:2] for c in pipeline["update_document_status"].call_args_list
+    ]
 
 
 def test_run_ingest_pipeline_empty_extraction(pipeline, monkeypatch):

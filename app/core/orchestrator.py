@@ -493,15 +493,21 @@ class ARAPOrchestrator:
             record_document,
             update_document_status,
         )
-        update_document_status(result["doc_id"], "processing")
-        record_chunk_metadata(result["doc_id"], final_state.get("chunks") or [])
+        # NOTE: the parent `documents` row MUST exist before we write
+        # `document_chunks` — that table has a FK (document_chunks_document_id_fkey)
+        # referencing documents(doc_id). Writing chunks first would violate the
+        # constraint and the insert would be silently dropped (it is best-effort,
+        # so the failure is only logged). Create the parent row first (status
+        # "processing"), then the chunks, then flip the document to "ready".
         record_document(
             doc_id=result["doc_id"],
             filename=filename,
             chunk_count=result["chunk_count"],
             kg_triples=result["kg_triples"],
-            status="ready",
+            status="processing",
         )
+        record_chunk_metadata(result["doc_id"], final_state.get("chunks") or [])
+        update_document_status(result["doc_id"], "ready")
 
         return result
 
@@ -536,7 +542,7 @@ class ARAPOrchestrator:
                 "answer":            str,         final approved answer
                 "sources":           list[dict],  formatted source citations
                 "query_type":        str,          "direct"|"single"|"multi_hop"|"graph"
-                "faithfulness_score": float,       NLI entailment score (0.0-1.0)
+                "faithfulness_score": float,       NLI faithfulness (1 - P(contradiction)) mean (0.0-1.0)
                 "latency_ms":        dict,         per-node timing breakdown
             }
         """

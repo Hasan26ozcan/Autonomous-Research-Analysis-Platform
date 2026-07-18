@@ -176,19 +176,33 @@ def _extract_kg(enriched_chunks: list, doc_id: str) -> list:
 def _save_metadata(
     doc_id: str, filename: str, chunks: list, all_triples: list, total_pages: int
 ) -> None:
-    """Persist chunk + document metadata to PostgreSQL (best-effort)."""
+    """Persist chunk + document metadata to PostgreSQL (best-effort).
+
+    Order matters: `document_chunks` has a foreign-key constraint
+    (document_chunks_document_id_fkey) referencing `documents(doc_id)`.
+    The parent `documents` row MUST exist before any chunk row is written,
+    otherwise the chunk insert violates the FK and is silently dropped
+    (the write is best-effort, so the failure only surfaces in the logs).
+    Create the parent row first (status "processing"), then the chunks, then
+    flip the document to "ready".
+    """
+    try:
+        record_document(
+            doc_id, filename, len(chunks), len(all_triples),
+            status="processing", total_pages=total_pages,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("PostgreSQL document save failed (non-fatal): %s", e)
+
     try:
         record_chunk_metadata(doc_id, chunks)
     except Exception as e:  # pragma: no cover - defensive
         logger.warning("PostgreSQL chunk metadata save failed (non-fatal): %s", e)
 
     try:
-        record_document(
-            doc_id, filename, len(chunks), len(all_triples),
-            status="ready", total_pages=total_pages,
-        )
+        update_document_status(doc_id, "ready")
     except Exception as e:  # pragma: no cover - defensive
-        logger.warning("PostgreSQL metadata save failed (non-fatal): %s", e)
+        logger.warning("PostgreSQL document status update failed (non-fatal): %s", e)
 
 
 def _finalize_ingest(doc_id: str, chunks: list, all_triples: list) -> None:

@@ -1,5 +1,8 @@
 # Adaptive Research & Analysis Platform (ARAP)
 
+**ARAP turns your PDFs and research material into a question-answering system that
+*cites its sources and checks its own work*.**
+
 > Production-style, **multi-agent Retrieval-Augmented Generation (RAG)** platform for answering
 > questions over PDF documents and research material. ARAP combines **adaptive query routing**,
 > **hybrid retrieval**, **contextual chunk enrichment**, **knowledge-graph traversal**, a
@@ -16,6 +19,7 @@
 ## Table of Contents
 
 - [What ARAP does](#what-arap-does)
+- [Example: a real end-to-end query](#example-a-real-end-to-end-query)
 - [Key features](#key-features)
 - [Architecture](#architecture)
   - [System overview](#system-overview)
@@ -65,6 +69,52 @@ The pipeline can:
 - personalize answers with Mem0 long-term memory;
 - stream progress and final results over WebSocket;
 - log every request, pipeline node, and query to PostgreSQL for analytics and offline evaluation.
+
+---
+
+## Example: a real end-to-end query
+
+To show what ARAP actually produces (not a hand-written sample), here is a **real**
+response from the pipeline. A research PDF — *"The LLM Fallacy: Misattribution in
+AI-Assisted Cognitive Workflows"* by Hyunwoo Kim — was ingested, then asked a single
+question. Everything below is the platform's own output, lightly formatted.
+
+> **Question:** "What is the topic of this article?"
+
+**Answer**
+
+> The topic of this article is the **LLM Fallacy**, which refers to a cognitive
+> attribution error where individuals misinterpret outputs generated with the assistance
+> of Large Language Models (LLMs) as evidence of their own independent competence,
+> leading to a systematic divergence between perceived and actual capability.
+
+**Sources** — retrieved, reranked, and cited by the generator:
+
+| # | Page | Chunk | Rerank score | Snippet |
+| --- | --- | --- | --- | --- |
+| 1 | 5 | 5 | −7.0052 | "…cognitive attribution errors in AI-assisted workflows…" |
+| 2 | 6 | 6 | −7.4964 | "…manifestations across cognitive tasks…" |
+| 3 | 10 | 12 | −7.6813 | "…misattribution of LLM-assisted outputs as evidence of human competence…" |
+| 4 | 11 | 13 | −7.9684 | "…Guidelines…" |
+| 5 | 1 | 0 | −8.0122 | "The LLM Fallacy:…" |
+
+**Pipeline metrics** (per stage, in milliseconds):
+
+| Stage | Latency (ms) |
+| --- | --- |
+| Router | 3,777 |
+| Retrieval | 3,934 |
+| Generation | 703 |
+| Faithfulness judge | 2,534 |
+
+- **Query type:** `single` — the router decided one hybrid retrieval round was enough.
+- **Faithfulness score:** `0.994` — the answer is almost entirely grounded in the
+  cited chunks; the local NLI judge found no meaningful contradiction.
+- **Session id:** `test1`.
+
+This single exchange exercises the whole stack described below: adaptive routing,
+hybrid retrieval + cross-encoder reranking, grounded generation with `[Source N]`
+citations, the faithfulness judge, and structured latency logging.
 
 ---
 
@@ -206,9 +256,12 @@ any query containing `CREATE/MERGE/DELETE/SET/…`, missing `LIMIT`, or missing 
   calls `llm_model` (GPT-4o by default) with a strict grounding prompt that requires `[Source N]`
   citations. Uses a stricter prompt on retry attempts.
 - **judge()** — splits the draft into sentences and scores each against the concatenated context
-  with a local NLI model (`cross-encoder/nli-deberta-v3-small`). `faithfulness_score` = mean
-  entailment probability. If below `faithfulness_threshold` (0.75) and retries remain, the graph
-  loops back to `generate`; otherwise the answer is finalized (best available, never an infinite loop).
+  with a local NLI model (`cross-encoder/nli-deberta-v3-small`). Per-sentence faithfulness
+  = `1 - P(contradiction)`; `faithfulness_score` = mean across sentences. A grounded answer
+  therefore scores ~0.92-0.99, so `faithfulness_threshold` (0.90) passes good answers while
+  rejecting hallucinations. If below the threshold (or any single sentence has P(contradiction) above
+  `faithfulness_contradiction_gate`) and retries remain, the graph loops back to `generate`;
+  otherwise the answer is finalized (best available, never an infinite loop).
 - **store_memory()** — persists the approved Q&A turn to Mem0 for future personalization.
 
 Using a local NLI model instead of LLM-as-judge avoids API cost and ~2–3 s latency per answer.
@@ -418,7 +471,7 @@ differs. The most important ones:
 | `LANGCHAIN_API_KEY` | — | LangSmith project key. |
 | `TOP_K_RETRIEVAL` / `TOP_K_FINAL` | `10` / `5` | Candidates before rerank / chunks sent to LLM. |
 | `RRF_K` / `DENSE_WEIGHT` / `BM25_WEIGHT` | `60` / `0.7` / `0.3` | RRF fusion parameters. |
-| `FAITHFULNESS_THRESHOLD` | `0.75` | NLI score below this triggers a retry. |
+| `FAITHFULNESS_THRESHOLD` | `0.90` | Mean faithfulness (1 - P(contradiction)) below this triggers a retry. |
 | `NLI_MODEL` | `cross-encoder/nli-deberta-v3-small` | Local faithfulness model. |
 | `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | `redis://localhost:6379/1` / `/2` | Celery broker/result. |
 

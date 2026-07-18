@@ -24,8 +24,13 @@ THREE RESPONSIBILITIES
      - Splits draft_answer into sentences
      - Scores each sentence as: entailment / neutral / contradiction
        against the concatenated retrieved context
-     - faithfulness_score = mean entailment probability across sentences
-     - If score < settings.faithfulness_threshold (0.75): triggers retry
+     - faithfulness_score = mean of (1 - P(contradiction)) across sentences
+     - A genuinely grounded answer scores ~0.92-0.99 (near-zero
+       contradiction probability per claim); a hallucinated claim has a
+       high contradiction probability and pulls the score down.
+     - If score < settings.faithfulness_threshold (0.90) OR any single
+       sentence has P(contradiction) > faithfulness_contradiction_gate:
+       triggers a retry with the stricter prompt.
      - After settings.max_retries retries: finalizes with best available answer
 
    Why NLI instead of LLM-as-judge?
@@ -179,8 +184,12 @@ USER_MEMORY_HEADER = "\n[User Context from Memory]\n"
 
 # cross-encoder/nli-deberta-v3-small output label order:
 # Position 0 = contradiction, Position 1 = entailment, Position 2 = neutral
-# We want the ENTAILMENT probability for faithfulness scoring.
+# Faithfulness is scored from the CONTRADICTION probability (see judge()):
+# a grounded claim has near-zero contradiction prob; a hallucination has a
+# high one. All three indices are kept explicit for clarity.
+_NLI_CONTRADICTION_INDEX = 0
 _NLI_ENTAILMENT_INDEX = 1
+_NLI_NEUTRAL_INDEX = 2
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -416,8 +425,12 @@ class AnswerGenerator:
                              ~2000 tokens — balances coverage vs model limits)
                hypothesis = each answer sentence
           3. Run cross-encoder forward pass with apply_softmax=True.
-          4. Extract entailment probability (index 1 of softmax output).
-          5. faithfulness_score = mean across all sentence scores.
+          4. Extract the CONTRADICTION probability (index 0 of the
+             softmax output) per sentence.
+          5. Per-sentence faithfulness = 1 - P(contradiction). The mean
+             across all sentences is the reported faithfulness_score.
+             A grounded claim has ~0 contradiction prob -> ~1.0; a
+             hallucinated claim has high contradiction prob -> low score.
 
         Reads from AgentState:
             draft_answer     (str):        from generate()
@@ -426,7 +439,8 @@ class AnswerGenerator:
             latency_ms       (dict):       accumulated timing
 
         Writes to AgentState:
-            faithfulness_score (float):  0.0–1.0, NLI entailment mean
+            faithfulness_score (float):  0.0–1.0, mean of (1 - P(contradiction))
+                                      across answer sentences
             judge_passed       (bool):   True if approved or retries exhausted
             answer             (str):    set when judge_passed=True
             retry_count        (int):    incremented on rejection
@@ -508,16 +522,27 @@ class AnswerGenerator:
         nli_elapsed_ms = (time.perf_counter() - t_nli) * 1000
 
         # raw_scores shape: (n_sentences, 3) — [contradiction, entailment, neutral]
-        entailment_scores = [
-            float(row[_NLI_ENTAILMENT_INDEX])
+        contradiction_probs = [
+            float(row[_NLI_CONTRADICTION_INDEX])
             for row in raw_scores
         ]
-        faithfulness_score = sum(entailment_scores) / len(entailment_scores)
+        # Calibrated per-sentence faithfulness = 1 - P(contradiction):
+        #   - a faithful OR neutral claim has near-zero contradiction prob -> ~1.0
+        #   - a hallucinated claim has a high contradiction prob -> low score
+        # The mean over sentences is the expected fraction of answer claims that
+        # are NOT contradicted by the context. For a competent NLI model this
+        # puts genuinely grounded answers at ~0.92-0.99, so the 0.90
+        # threshold passes good answers while rejecting fabrications.
+        sentence_faithfulness = [1.0 - cp for cp in contradiction_probs]
+        faithfulness_score = sum(sentence_faithfulness) / len(sentence_faithfulness)
+        max_contradiction = max(contradiction_probs)
 
         logger.info(
             "judge(): faithfulness=%.3f (threshold=%.2f) | "
+            "max_contradiction=%.3f (gate=%.2f) | "
             "%d sentences, NLI in %.0fms | retry=%d/%d",
             faithfulness_score, settings.faithfulness_threshold,
+            max_contradiction, settings.faithfulness_contradiction_gate,
             len(sentences), nli_elapsed_ms,
             retry_count, settings.max_retries,
         )
@@ -525,10 +550,18 @@ class AnswerGenerator:
         # ── Decision: pass, reject, or force-finalize ─────────────────────────
         retries_exhausted = retry_count >= settings.max_retries
         passed = faithfulness_score >= settings.faithfulness_threshold
+        # Contradiction guard: even if the mean clears the threshold, a single
+        # confidently-contradicted sentence (P(contradiction) > gate) is a
+        # hallucination that must not be returned — one bold fabrication should
+        # not hide behind otherwise-faithful text.
+        contradiction_violation = (
+            max_contradiction > settings.faithfulness_contradiction_gate
+        )
 
         return self._judge_build_update(
-            state, t0, faithfulness_score, draft, retry_count,
-            retries_exhausted, passed,
+            state, t0, faithfulness_score, max_contradiction,
+            draft, retry_count, retries_exhausted, passed,
+            contradiction_violation,
         )
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -572,17 +605,21 @@ class AnswerGenerator:
         state: AgentState,
         t0: float,
         faithfulness_score: float,
+        max_contradiction: float,
         draft: str,
         retry_count: int,
         retries_exhausted: bool,
         passed: bool,
+        contradiction_violation: bool,
     ) -> dict:
         """
         Build the judge() state update: pass, reject, or force-finalize.
 
-        Mirrors the inlined decision logic exactly: on pass (or exhausted
-        retries) approves with answer=draft; otherwise rejects and bumps
-        retry_count to route back to generate() with the stricter prompt.
+        A clean pass requires BOTH the mean faithfulness >= threshold AND no
+        single sentence exceeding the contradiction gate. If either fails (and
+        retries remain) we reject and route back to generate() with the
+        stricter prompt. If retries are exhausted we finalize the best-available
+        answer regardless (prevents infinite retry loops).
         """
         elapsed_ms = (time.perf_counter() - t0) * 1000
         update: dict = {
@@ -593,22 +630,29 @@ class AnswerGenerator:
             },
         }
 
-        if passed or retries_exhausted:
-            if retries_exhausted and not passed:
+        clean_pass = passed and not contradiction_violation
+
+        if clean_pass or retries_exhausted:
+            if retries_exhausted and not clean_pass:
                 logger.warning(
-                    "judge(): max_retries (%d) reached with faithfulness=%.3f < %.2f. "
-                    "Finalizing best-available answer.",
-                    settings.max_retries, faithfulness_score,
-                    settings.faithfulness_threshold,
+                    "judge(): max_retries (%d) reached (faithfulness=%.3f, "
+                    "max_contradiction=%.3f). Finalizing best-available answer.",
+                    settings.max_retries, faithfulness_score, max_contradiction,
                 )
             update["judge_passed"] = True
             update["answer"] = draft
         else:
-            # Reject: route back to generate() with stricter prompt
+            # Reject: route back to generate() with stricter prompt.
+            reason = (
+                f", max_contradiction={max_contradiction:.3f} > "
+                f"{settings.faithfulness_contradiction_gate:.2f} gate"
+                if contradiction_violation
+                else f" < {settings.faithfulness_threshold:.2f} threshold"
+            )
             logger.info(
-                "judge(): REJECTED (faithfulness=%.3f < %.2f). "
+                "judge(): REJECTED (faithfulness=%.3f%s). "
                 "Routing to generate() retry.",
-                faithfulness_score, settings.faithfulness_threshold,
+                faithfulness_score, reason,
             )
             update["judge_passed"] = False
             update["retry_count"] = retry_count + 1

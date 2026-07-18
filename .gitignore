@@ -35,3 +35,4 @@ neo4j_data/
 
 # Worker HuggingFace/transformers cache (bind-mounted into the container)
 .hf_cache/
+hf_cache/

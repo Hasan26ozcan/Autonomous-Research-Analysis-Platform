@@ -96,6 +96,10 @@ def test_record_chunk_metadata_upserts_on_reingest(conn):
     """Re-ingesting the same chunk_index must UPDATE, not raise/duplicate (BUG 4)."""
     doc_id = f"test_{uuid.uuid4().hex}"
     try:
+        # The parent `documents` row must exist first — `document_chunks`
+        # has an FK to documents(doc_id), mirroring the real ingest flow
+        # (orchestrator.ingest creates the document before its chunks).
+        record_document(doc_id, "a.pdf", 1, 0, status="ready")
         record_chunk_metadata(doc_id, [
             {"chunk_index": 0, "text": "original", "word_count": 10, "page": 1},
         ])

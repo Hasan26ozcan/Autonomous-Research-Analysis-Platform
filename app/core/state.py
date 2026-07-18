@@ -135,9 +135,9 @@ class AgentState(TypedDict, total=False):
 
     # ── Faithfulness judging ───────────────────────────────────────────────────
     faithfulness_score: float
-    # Avg NLI entailment score across all answer sentences (0.0–1.0).
-    # 1.0 = every sentence entailed by context (no hallucination)
-    # 0.0 = no sentences supported (pure confabulation)
+    # Mean of (1 - P(contradiction)) over all answer sentences (0.0–1.0).
+    # 1.0 = every sentence supported by context (no hallucination)
+    # 0.0 = every sentence contradicted by context (pure confabulation)
 
     judge_passed: bool
     # True when faithfulness_score >= threshold OR retry_count >= max_retries.

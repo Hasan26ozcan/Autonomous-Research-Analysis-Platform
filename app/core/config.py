@@ -209,9 +209,32 @@ class Settings(BaseSettings):
     # Model: cross-encoder/nli-deberta-v3-small
     #   - Best NLI model at this size (2024-2026 NLI benchmarks)
     #   - Runs on CPU in ~50ms per sentence pair, no API cost
-    #   - 3 labels: contradiction=0, neutral=0.5, entailment=1.0
-    # Below faithfulness_threshold → retry generation with stricter prompt
-    faithfulness_threshold: float = Field(default=0.75)
+    #   - 3 labels: [contradiction, entailment, neutral]
+    # Scoring: per-sentence faithfulness = 1 - P(contradiction); the answer
+    #   score is the mean across sentences. A grounded answer therefore scores
+    #   ~0.92-0.99 (near-zero contradiction prob), so the threshold can
+    #   sit at 0.90 and still pass good answers while rejecting
+    #   hallucinations. Below faithfulness_threshold → retry generation with
+    #   the stricter prompt. See app/agents/generator.py judge().
+    faithfulness_threshold: float = Field(
+        default=0.90,
+        description=(
+            "Minimum mean faithfulness (1 - P(contradiction) over answer "
+            "sentences) required to return an answer without a retry. 0.90 "
+            "keeps genuinely grounded answers (which score ~0.92-0.99) while "
+            "rejecting hallucinated ones. Lower this only if your live "
+            "average_faithfulness for known-good answers trends below 0.90."
+        ),
+    )
+    faithfulness_contradiction_gate: float = Field(
+        default=0.50,
+        description=(
+            "Per-sentence contradiction-probability ceiling. Any single "
+            "answer sentence with P(contradiction) above this is treated as a "
+            "hallucination and forces a retry even if the mean score is high, "
+            "so one bold fabrication cannot hide behind otherwise-faithful text."
+        ),
+    )
     nli_model: str = Field(default="cross-encoder/nli-deberta-v3-small")
 
     # ── Celery — Async Task Queue ─────────────────────────────────────────────

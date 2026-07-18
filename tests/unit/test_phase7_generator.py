@@ -388,7 +388,7 @@ class TestGenerateNode:
 class TestJudgeNode:
 
     def test_passes_when_entailment_above_threshold(self):
-        """High entailment → judge_passed=True and answer set."""
+        """Low contradiction (P(c)=0.02 -> faithfulness 0.98 >= 0.90) → judge_passed=True and answer set."""
         gen = make_generator(nli_scores=[[0.02, 0.95, 0.03]])
         draft = "The model achieved 97% accuracy on the test dataset."
         result = gen.judge(make_state(draft_answer=draft))
@@ -396,17 +396,19 @@ class TestJudgeNode:
         assert result["answer"] == draft
 
     def test_rejects_when_entailment_below_threshold(self):
-        """Low entailment → judge_passed=False, retry_count incremented."""
+        """High contradiction (P(c)=0.50 -> faithfulness 0.50 < 0.90) → judge_passed=False, retry_count incremented."""
         gen = make_generator(nli_scores=[[0.50, 0.40, 0.10]])
         draft = "The model achieved 97% accuracy on the test dataset."
         result = gen.judge(make_state(draft_answer=draft, retry_count=0))
         assert result["judge_passed"] is False
         assert result["retry_count"] == 1
 
-    def test_faithfulness_score_is_mean_of_sentence_scores(self):
+    def test_faithfulness_score_is_mean_of_one_minus_contradiction(self):
         """
-        Two sentences: entailment [0.80, 0.60] → faithfulness = 0.70.
-        Mean is computed across ALL scoreable sentences (>= 20 chars).
+        Per-sentence faithfulness = 1 - P(contradiction). Two sentences with
+        contradiction probs [0.10, 0.30] -> per-sentence [0.90, 0.70]
+        -> faithfulness_score = 0.80. Mean is over ALL scoreable
+        sentences (>= 20 chars).
         """
         gen = make_generator(nli_scores=[
             [0.10, 0.80, 0.10],
@@ -414,7 +416,7 @@ class TestJudgeNode:
         ])
         draft = "First complete sentence right here. Second complete sentence right here."
         result = gen.judge(make_state(draft_answer=draft))
-        expected = round((0.80 + 0.60) / 2, 4)
+        expected = round(((1 - 0.10) + (1 - 0.30)) / 2, 4)
         assert abs(result["faithfulness_score"] - expected) < 0.001
 
     def test_force_finalizes_when_retries_exhausted(self):
@@ -531,6 +533,44 @@ class TestJudgeNode:
         ))
         assert result["judge_passed"] is False
         assert "answer" not in result
+
+    def test_contradiction_guard_rejects_despite_high_mean(self):
+        """
+        Nine faithful sentences (P(contradiction)=0.01 -> 0.99 each) plus
+        ONE confidently-contradicted sentence (P(c)=0.60 -> 0.40) gives a
+        mean of (0.99*9 + 0.40)/10 = 0.931 >= 0.90 threshold, but
+        the per-sentence guard (max P(c) > 0.50) must STILL reject because
+        the answer contains a hallucination. Proves the guard, not the mean,
+        is what catches a single bold fabrication.
+        """
+        faithful = [[0.01, 0.80, 0.19]] * 9
+        contradicted = [[0.60, 0.20, 0.20]]
+        gen = make_generator(nli_scores=faithful + contradicted)
+        draft = " ".join(
+            [f"Claim number {i} is supported by the source text." for i in range(9)]
+        ) + " This fabricated claim directly contradicts the provided source."
+        result = gen.judge(make_state(draft_answer=draft, retry_count=0))
+        assert result["judge_passed"] is False
+        assert result["retry_count"] == 1
+        # Prove rejection came from the guard, not the (passing) mean.
+        assert result["faithfulness_score"] >= 0.90
+
+    def test_contradiction_gate_boundary_passes_at_exactly_gate(self):
+        """
+        One sentence sits EXACTLY at the gate (P(c)=0.50); the rest are
+        faithful (P(c)=0.02). Mean = (0.98*9 + 0.50)/10 = 0.932 >= 0.90
+        and max P(c)=0.50 is NOT > gate, so this is a clean PASS (the
+        guard uses strict >, so the boundary does not cause a false reject).
+        """
+        nine_faithful = [[0.02, 0.90, 0.08]] * 9
+        at_gate = [[0.50, 0.40, 0.10]]
+        gen = make_generator(nli_scores=nine_faithful + at_gate)
+        draft = " ".join(
+            [f"Claim number {i} is supported by the source text." for i in range(9)]
+        ) + " One sentence sits exactly at the boundary of the gate."
+        result = gen.judge(make_state(draft_answer=draft))
+        assert result["judge_passed"] is True
+        assert "answer" in result
 
 
 
