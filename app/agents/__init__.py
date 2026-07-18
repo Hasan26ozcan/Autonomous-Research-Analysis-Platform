@@ -23,6 +23,13 @@ if TYPE_CHECKING:
     from app.agents.retrieval_agent import RetrievalAgent, retrieval_agent
     from app.agents.router import RouterAgent, RouterOutput, router_agent
 
+# Module paths for the lazily-loaded agent submodules. Centralised here so the
+# dotted paths are not duplicated across the export table below.
+_GENERATOR_MODULE = "app.agents.generator"
+_GRAPH_AGENT_MODULE = "app.agents.graph_agent"
+_RETRIEVAL_AGENT_MODULE = "app.agents.retrieval_agent"
+_ROUTER_MODULE = "app.agents.router"
+
 __all__ = [
     "AnswerGenerator",
     "EntityExtractionResult",
@@ -39,18 +46,18 @@ __all__ = [
 ]
 
 _EXPORTS: dict[str, tuple[str, str]] = {
-    "AnswerGenerator": ("app.agents.generator", "AnswerGenerator"),
-    "EntityExtractionResult": ("app.agents.graph_agent", "EntityExtractionResult"),
-    "KnowledgeGraphAgent": ("app.agents.graph_agent", "KnowledgeGraphAgent"),
-    "Triple": ("app.agents.graph_agent", "Triple"),
-    "TripleExtractionResult": ("app.agents.graph_agent", "TripleExtractionResult"),
-    "RetrievalAgent": ("app.agents.retrieval_agent", "RetrievalAgent"),
-    "RouterAgent": ("app.agents.router", "RouterAgent"),
-    "RouterOutput": ("app.agents.router", "RouterOutput"),
-    "generator": ("app.agents.generator", "generator"),
-    "kg_agent": ("app.agents.graph_agent", "kg_agent"),
-    "retrieval_agent": ("app.agents.retrieval_agent", "retrieval_agent"),
-    "router_agent": ("app.agents.router", "router_agent"),
+    "AnswerGenerator": (_GENERATOR_MODULE, "AnswerGenerator"),
+    "EntityExtractionResult": (_GRAPH_AGENT_MODULE, "EntityExtractionResult"),
+    "KnowledgeGraphAgent": (_GRAPH_AGENT_MODULE, "KnowledgeGraphAgent"),
+    "Triple": (_GRAPH_AGENT_MODULE, "Triple"),
+    "TripleExtractionResult": (_GRAPH_AGENT_MODULE, "TripleExtractionResult"),
+    "RetrievalAgent": (_RETRIEVAL_AGENT_MODULE, "RetrievalAgent"),
+    "RouterAgent": (_ROUTER_MODULE, "RouterAgent"),
+    "RouterOutput": (_ROUTER_MODULE, "RouterOutput"),
+    "generator": (_GENERATOR_MODULE, "generator"),
+    "kg_agent": (_GRAPH_AGENT_MODULE, "kg_agent"),
+    "retrieval_agent": (_RETRIEVAL_AGENT_MODULE, "retrieval_agent"),
+    "router_agent": (_ROUTER_MODULE, "router_agent"),
 }
 
 

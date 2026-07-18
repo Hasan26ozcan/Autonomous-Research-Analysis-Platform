@@ -35,9 +35,6 @@ def _patch_pool(module, pool):
     return patch.object(module, "get_pool", return_value=pool)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# get_pool
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_get_pool_returns_none_when_init_fails(postgres_store, monkeypatch):
     # Force the connection pool constructor to raise → get_pool returns None.
@@ -60,9 +57,6 @@ def test_get_pool_builds_real_pool_when_available(postgres_store, monkeypatch):
     assert postgres_store.get_pool() is fake_pool
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# record_document
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_record_document_upserts_and_commits(postgres_store, monkeypatch):
     pool = make_pool()
@@ -95,9 +89,6 @@ def test_record_document_swallows_db_error(postgres_store, monkeypatch):
     postgres_store.record_document("doc1", "a.pdf", 10, 3)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# update_document_status
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_update_document_status_updates(postgres_store, monkeypatch):
     pool = make_pool()
@@ -119,9 +110,6 @@ def test_update_document_status_swallows_db_error(postgres_store, monkeypatch):
     postgres_store.update_document_status("doc1", "processing")
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# record_chunk_metadata
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_record_chunk_metadata_executemany(postgres_store, monkeypatch):
     pool = make_pool()
@@ -153,9 +141,6 @@ def test_record_chunk_metadata_swallows_db_error(postgres_store, monkeypatch):
     postgres_store.record_chunk_metadata("doc1", [{"chunk_index": 0}])
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# record_user
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_record_user_returns_id(postgres_store, monkeypatch):
     pool = make_pool(script=[FakeRow({"id": 99})])
@@ -175,9 +160,6 @@ def test_record_user_swallows_db_error(postgres_store, monkeypatch):
     assert postgres_store.record_user("alice") is None
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# record_memory
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_record_memory_writes(postgres_store, monkeypatch):
     pool = make_pool()
@@ -209,9 +191,6 @@ def test_record_memory_swallows_db_error(postgres_store, monkeypatch):
     postgres_store.record_memory("u1", "remember this")
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# record_conversation
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_record_conversation_writes(postgres_store, monkeypatch):
     pool = make_pool()
@@ -239,9 +218,6 @@ def test_record_conversation_swallows_db_error(postgres_store, monkeypatch):
     postgres_store.record_conversation("s1", "u1", "q?", "a!")
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# record_query
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_record_query_writes(postgres_store, monkeypatch):
     pool = make_pool()

@@ -94,7 +94,7 @@ def test_top_documents_returns_rows(analytics):
     assert len(result) == 2
     assert result[0]["doc_id"] == "d1"
     assert result[0]["query_count"] == 9
-    assert result[0]["avg_faithfulness"] == 0.88
+    assert result[0]["avg_faithfulness"] == pytest.approx(0.88)
     # None faithfulness must survive through, not become 0.
     assert result[1]["avg_faithfulness"] is None
 
@@ -144,7 +144,7 @@ def test_eval_trend_returns_runs(analytics):
     assert r["run_id"] == 1
     assert r["num_questions"] == 20
     assert r["status"] == "completed"
-    assert r["average_faithfulness"] == 0.92
+    assert r["average_faithfulness"] == pytest.approx(0.92)
     assert r["created_at"] == "2026-01-02T03:04:05"
     assert r["token_usage"]["prompt_tokens"] == 10
 
@@ -177,6 +177,6 @@ def test_eval_trend_empty_on_db_error(analytics):
 
 def test_round_helper(analytics):
     assert analytics._round(None) is None
-    assert analytics._round(0.123456789) == 0.1235
+    assert analytics._round(0.123456789) == pytest.approx(0.1235)
     assert analytics._round("not a number") is None
-    assert analytics._round(3) == 3.0
+    assert analytics._round(3) == pytest.approx(3.0)

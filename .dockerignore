@@ -1,0 +1,43 @@
+# Secrets — never bake real credentials into the image
+.env
+.env.*
+!.env.example
+
+# Version control metadata
+.git
+.gitignore
+
+# Python caches / build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+.venv311/
+env/
+
+# Coverage / lint output
+.coverage
+coverage.xml
+htmlcov/
+
+# Local model / data caches
+.hf_cache/
+hf_cache/
+qdrant_storage/
+neo4j_data/
+
+# OS / IDE noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Documentation is not needed inside the runtime image
+docs/

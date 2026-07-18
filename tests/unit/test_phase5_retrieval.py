@@ -19,14 +19,11 @@ Tests run offline in < 2 seconds.
 Run:
     pytest tests/unit/test_phase5_retrieval.py -v
 """
-
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Fixtures & Helpers
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def make_chunk(
     text: str = "Default chunk text " * 5,
@@ -164,9 +161,6 @@ def make_state(
     }
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# HyDE Rewriting Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestHydeRewrite:
 
@@ -200,9 +194,6 @@ class TestHydeRewrite:
         assert result == "Passage with spaces."
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Question Decomposition Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestDecomposeQuestion:
 
@@ -282,9 +273,6 @@ class TestDecomposeQuestion:
         assert len(result) >= 1
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# RRF Fusion Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestRRFMerge:
 
@@ -379,9 +367,6 @@ class TestRRFMerge:
         assert result[0]["chunk_index"] == 5
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Cross-Encoder Re-ranking Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestRerank:
 
@@ -452,9 +437,6 @@ class TestRerank:
         self.mock_ce.predict.assert_not_called()
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# retrieve() Node — State Contract Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestRetrieveNode:
 
@@ -490,7 +472,7 @@ class TestRetrieveNode:
         state = make_state(latency_ms={"router": 312.5})
         agent, mocks = make_agent_with_mocks()
         result = run_retrieve(agent, mocks, state)
-        assert result["latency_ms"]["router"] == 312.5
+        assert result["latency_ms"]["router"] == pytest.approx(312.5)
         assert "retrieval" in result["latency_ms"]
 
     def test_output_keys_valid_in_agent_state(self):
@@ -534,7 +516,7 @@ class TestRetrieveNode:
         agent, mocks = make_agent_with_mocks()
         result = run_retrieve(agent, mocks, make_state(question=""))
         assert result["retrieved_chunks"] == []
-        assert result["retrieval_score"] == 0.0
+        assert result["retrieval_score"] == pytest.approx(0.0)
 
     def test_top_k_is_respected(self):
         """retrieve() must return at most top_k chunks."""
@@ -564,9 +546,6 @@ class TestRetrieveNode:
         assert call_args == hyde_passage
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# retrieve_multi() Node Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestRetrieveMultiNode:
 
@@ -699,9 +678,6 @@ class TestRetrieveMultiNode:
             assert key in valid_keys, f"retrieve_multi() returned invalid key '{key}'"
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# _avg_rerank_score Helper Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestAvgRerankScore:
 
@@ -727,7 +703,7 @@ class TestAvgRerankScore:
 
     def test_returns_zero_for_empty_list(self):
         from app.agents.retrieval_agent import _avg_rerank_score
-        assert _avg_rerank_score([]) == 0.0
+        assert _avg_rerank_score([]) == pytest.approx(0.0)
 
     def test_result_is_rounded_to_4_decimals(self):
         from app.agents.retrieval_agent import _avg_rerank_score
@@ -736,9 +712,6 @@ class TestAvgRerankScore:
         assert result == round(1/3, 4)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Downstream Compatibility — Phase 7 Generator Expectations
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestDownstreamCompatibility:
     """
@@ -784,9 +757,6 @@ class TestDownstreamCompatibility:
         assert isinstance(retrieval_agent, RetrievalAgent)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Extra coverage: lazy cross-encoder load + cache-hit / edge branches
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestRetrievalAgentExtra:
 
@@ -863,7 +833,7 @@ class TestRetrievalAgentExtra:
 
         assert len(result["retrieved_chunks"]) >= 1
         assert len(sleeps) == 1  # one pause after the first sub-question
-        assert all(s == 0.001 for s in sleeps)
+        assert all(s == pytest.approx(0.001) for s in sleeps)
 
     def test_retrieve_multi_no_candidates(self, monkeypatch):
         """retrieve_multi() with no retrievable candidates after dedup

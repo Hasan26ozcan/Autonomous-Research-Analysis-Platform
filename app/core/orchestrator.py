@@ -694,40 +694,55 @@ class ARAPOrchestrator:
         """
         status: dict[str, str] = {}
 
-        # Qdrant
-        try:
-            from qdrant_client import QdrantClient
-            client = QdrantClient(
-                host=settings.qdrant_host,
-                port=settings.qdrant_port,
-                timeout=2,
-            )
-            client.get_collections()
-            status["qdrant"] = "ok"
-        except Exception:
-            status["qdrant"] = "unreachable"
+        # Each check is a blocking I/O call; run them off the event loop in
+        # worker threads so this coroutine awaits real work instead of blocking
+        # the loop. The checks remain independent — one failure does not affect
+        # the others (gather with return_exceptions=True).
+        def _check_qdrant() -> bool:
+            try:
+                from qdrant_client import QdrantClient
+                client = QdrantClient(
+                    host=settings.qdrant_host,
+                    port=settings.qdrant_port,
+                    timeout=2,
+                )
+                client.get_collections()
+                return True
+            except Exception:
+                return False
 
-        # Neo4j
-        try:
-            from neo4j import GraphDatabase
-            driver = GraphDatabase.driver(
-                settings.neo4j_uri,
-                auth=(settings.neo4j_user, settings.neo4j_password),
-            )
-            driver.verify_connectivity()
-            driver.close()
-            status["neo4j"] = "ok"
-        except Exception:
-            status["neo4j"] = "unreachable"
+        def _check_neo4j() -> bool:
+            try:
+                from neo4j import GraphDatabase
+                driver = GraphDatabase.driver(
+                    settings.neo4j_uri,
+                    auth=(settings.neo4j_user, settings.neo4j_password),
+                )
+                driver.verify_connectivity()
+                driver.close()
+                return True
+            except Exception:
+                return False
 
-        # Redis
-        try:
-            import redis as redis_lib
-            r = redis_lib.from_url(settings.redis_url, socket_connect_timeout=2)
-            r.ping()
-            status["redis"] = "ok"
-        except Exception:
-            status["redis"] = "unreachable"
+        def _check_redis() -> bool:
+            try:
+                import redis as redis_lib
+                r = redis_lib.from_url(settings.redis_url, socket_connect_timeout=2)
+                r.ping()
+                return True
+            except Exception:
+                return False
+
+        ok_qdrant, ok_neo4j, ok_redis = await asyncio.gather(
+            asyncio.to_thread(_check_qdrant),
+            asyncio.to_thread(_check_neo4j),
+            asyncio.to_thread(_check_redis),
+            return_exceptions=True,
+        )
+
+        status["qdrant"] = "ok" if ok_qdrant is True else "unreachable"
+        status["neo4j"] = "ok" if ok_neo4j is True else "unreachable"
+        status["redis"] = "ok" if ok_redis is True else "unreachable"
 
         return status
 
@@ -764,6 +779,4 @@ def _safe_serialize(state: dict) -> dict:
 # Module-Level Singleton
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# Imported by FastAPI main.py as:
-#   from app.core.orchestrator import orchestrator
 orchestrator = ARAPOrchestrator()

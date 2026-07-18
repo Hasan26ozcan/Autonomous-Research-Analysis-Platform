@@ -138,6 +138,35 @@ logger = logging.getLogger(__name__)
 # object regardless of surrounding text. Used by both triple extraction
 # and query-entity extraction.
 
+def _extract_first_balanced_json(text: str) -> dict:
+    """
+    Scan ``text`` for the first balanced ``{ ... }`` JSON object and parse it.
+
+    Mirrors the inlined scan that previously lived in ``_parse_json_object`` so
+    callers degrade identically: raises ValueError("no JSON object found...")
+    when no opening brace exists, and ValueError("could not parse...") when no
+    balanced object parses as JSON.
+    """
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("no JSON object found in model output")
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = text[start:i + 1]
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError:
+                    break
+
+    raise ValueError("could not parse a JSON object from model output")
+
+
 def _parse_json_object(raw: str) -> dict:
     """
     Extract the first balanced JSON object from an LLM response.
@@ -163,24 +192,7 @@ def _parse_json_object(raw: str) -> dict:
         pass
 
     # Otherwise find the first balanced { ... } block
-    start = text.find("{")
-    if start == -1:
-        raise ValueError("no JSON object found in model output")
-    depth = 0
-    for i in range(start, len(text)):
-        ch = text[i]
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                candidate = text[start:i + 1]
-                try:
-                    return json.loads(candidate)
-                except json.JSONDecodeError:
-                    break
-
-    raise ValueError("could not parse a JSON object from model output")
+    return _extract_first_balanced_json(text)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -463,7 +475,7 @@ class KnowledgeGraphAgent:
                 self._driver.verify_connectivity()
                 logger.info("Neo4j connection verified.")
             except Exception as e:
-                logger.error("Neo4j connectivity check failed: %s", e)
+                logger.exception("Neo4j connectivity check failed: %s", e)
                 raise
         return self._driver
 
@@ -844,7 +856,7 @@ class KnowledgeGraphAgent:
             )
             return len(triples)
         except Exception as e:
-            logger.error(
+            logger.exception(
                 "Neo4j: batch write failed for doc_id=%s (KG storage skipped, "
                 "document remains searchable via vector/BM25): %s",
                 doc_id, str(e)[:150],
@@ -933,7 +945,7 @@ class KnowledgeGraphAgent:
             cypher = re.sub(r"\s*```$", "", cypher)
             return cypher.strip()
         except Exception as e:
-            logger.error("Cypher generation failed: %s", str(e)[:120])
+            logger.exception("Cypher generation failed: %s", str(e)[:120])
             return ""   # _validate_cypher() will reject empty string
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -983,7 +995,7 @@ class KnowledgeGraphAgent:
             return paths[:20]   # defense-in-depth cap, even though query has its own LIMIT
 
         except Exception as e:
-            logger.error(
+            logger.exception(
                 "Cypher execution failed (returning empty kg_paths): %s | query: %s",
                 str(e)[:150], cypher[:200],
             )

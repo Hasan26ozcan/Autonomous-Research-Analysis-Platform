@@ -20,6 +20,8 @@ Run:
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 def make_chunk(
@@ -527,4 +529,4 @@ class TestEnricherDefensiveAndHelpers:
         assert len(result["chunks"]) == 3
         # First chunk runs immediately; chunks 2 and 3 each trigger one sleep.
         assert len(sleeps) == 2
-        assert all(s == 0.001 for s in sleeps)
+        assert all(s == pytest.approx(0.001) for s in sleeps)

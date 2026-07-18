@@ -15,14 +15,12 @@ Covers:
   * acquire() forced to wait by the RPM window
   * acquire() forced to wait by the TPM window
 """
-
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from app.services.rate_limiter import SlidingWindowRateLimiter, estimate_tokens
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# estimate_tokens
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_estimate_tokens_adds_output_budget():
     # "hello world" = 11 chars → 11 // 4 = 2 input tokens, + 10 output = 12.
@@ -39,9 +37,6 @@ def test_estimate_tokens_ignores_blank_texts():
     assert estimate_tokens("abc", "", "   ", max_output_tokens=0) == max(1, 3 // 4) or 1
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# acquire — immediate pass
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_acquire_passes_immediately_on_empty_window():
     limiter = SlidingWindowRateLimiter(max_requests_per_minute=30, max_tokens_per_minute=6000)
@@ -54,9 +49,6 @@ def test_acquire_passes_immediately_on_empty_window():
     assert len(limiter._token_events) == 1
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# acquire — single call exceeds entire TPM budget (special branch)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_acquire_when_estimate_exceeds_full_tpm_budget():
     # 150 tokens vs a 100 TPM cap: the strict check could never be satisfied,
@@ -69,9 +61,6 @@ def test_acquire_when_estimate_exceeds_full_tpm_budget():
     assert limiter._token_events[0][1] == 150
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# acquire — forced to wait by the RPM window
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_acquire_waits_for_rpm_window_to_drain():
     limiter = SlidingWindowRateLimiter(max_requests_per_minute=5, max_tokens_per_minute=6000)
@@ -86,12 +75,9 @@ def test_acquire_waits_for_rpm_window_to_drain():
 
     sleep.assert_called_once()
     # The new request is recorded after acquiring.
-    assert limiter._request_times[-1] == 1061.0
+    assert limiter._request_times[-1] == pytest.approx(1061.0)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# acquire — forced to wait by the TPM window
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_acquire_waits_for_tpm_window_to_drain():
     limiter = SlidingWindowRateLimiter(max_requests_per_minute=100, max_tokens_per_minute=500)

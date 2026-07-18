@@ -65,30 +65,35 @@ SEED_QA: list[dict[str, str]] = [
 ]
 
 
+def _fetch_query_history(limit: int) -> list[dict]:
+    """Synchronously fetch recent Q/A pairs from PostgreSQL query_history."""
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    from app.core.config import settings
+
+    conn = psycopg2.connect(settings.postgres_url, connect_timeout=5)
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT question, answer
+                FROM query_history
+                WHERE answer IS NOT NULL AND LENGTH(answer) > 20
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
 async def _load_test_set(limit: int = 20, include_seed: bool = True) -> list[dict[str, str]]:
     """Load real Q/A pairs from PostgreSQL query_history when possible."""
     try:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-
-        from app.core.config import settings
-
-        conn = psycopg2.connect(settings.postgres_url, connect_timeout=5)
-        try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT question, answer
-                    FROM query_history
-                    WHERE answer IS NOT NULL AND LENGTH(answer) > 20
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                    """,
-                    (limit,),
-                )
-                rows = cur.fetchall()
-        finally:
-            conn.close()
+        rows = await asyncio.to_thread(_fetch_query_history, limit)
         if rows:
             return [
                 {"question": str(r["question"]), "ground_truth": str(r["answer"])}
@@ -345,9 +350,77 @@ def _write_report(report: dict[str, Any], save_path: str | None) -> None:
     """Persist the evaluation report to disk as JSON."""
     if not save_path:
         return
-    path = Path(save_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    allowed_root = Path(os.getcwd()).resolve()
+    target = Path(os.path.realpath(save_path))
+    if allowed_root != target and allowed_root not in target.parents:
+        raise ValueError(
+            f"Refusing to write report outside the allowed directory "
+            f"{allowed_root}: {target}"
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _aggregate_token_usage(
+    processed: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Sum token usage across all processed questions."""
+    tot: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    for rec in processed:
+        tu = rec.get("token_usage") or {}
+        tot["prompt_tokens"] += int(tu.get("prompt_tokens", 0) or 0)
+        tot["completion_tokens"] += int(tu.get("completion_tokens", 0) or 0)
+        tot["total_tokens"] += int(tu.get("total_tokens", 0) or 0)
+    return tot
+
+
+def _build_retrieval_items(
+    processed: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build one retrieval results row per retrieved chunk observed this run."""
+    items: list[dict[str, Any]] = []
+    for rec in processed:
+        for s in (rec.get("sources") or []):
+            if not isinstance(s, dict):
+                continue
+            items.append({
+                "question": rec.get("question", ""),
+                "doc_id": s.get("doc_id", ""),
+                "chunk_index": s.get("chunk_index", 0),
+                "score": s.get("rerank_score") or 0.0,
+                "source": s.get("source", ""),
+            })
+    return items
+
+
+def _persist_to_store(
+    report: dict[str, Any],
+    tot: dict[str, int],
+    items: list[dict[str, Any]],
+    num_processed: int,
+) -> None:
+    """Synchronously persist an evaluation run and its retrieval results."""
+    from app.services.eval_store import (
+        finish_run,
+        record_retrieval_results,
+        start_run,
+    )
+
+    run_id = start_run(num_processed)
+    if run_id is None:
+        return
+
+    finish_run(
+        run_id,
+        status=report.get("status", "unknown"),
+        metrics=report.get("metrics", {}),
+        token_usage=tot,
+        average_faithfulness=(report.get("summary") or {}).get("average_faithfulness"),
+        notes=report.get("error"),
+    )
+    record_retrieval_results(run_id, items)
 
 
 async def _persist_eval_run(report: dict[str, Any], processed: list[dict[str, Any]]) -> None:
@@ -358,47 +431,13 @@ async def _persist_eval_run(report: dict[str, Any], processed: list[dict[str, An
     still returns its in-memory report. No-op if Postgres was unavailable.
     """
     try:
-        from app.services.eval_store import (
-            finish_run,
-            record_retrieval_results,
-            start_run,
+        await asyncio.to_thread(
+            _persist_to_store,
+            report,
+            _aggregate_token_usage(processed),
+            _build_retrieval_items(processed),
+            len(processed),
         )
-
-        run_id = start_run(len(processed))
-        if run_id is None:
-            return
-
-        # Aggregate token usage across all processed questions.
-        tot = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-        for rec in processed:
-            tu = rec.get("token_usage") or {}
-            tot["prompt_tokens"] += int(tu.get("prompt_tokens", 0) or 0)
-            tot["completion_tokens"] += int(tu.get("completion_tokens", 0) or 0)
-            tot["total_tokens"] += int(tu.get("total_tokens", 0) or 0)
-
-        finish_run(
-            run_id,
-            status=report.get("status", "unknown"),
-            metrics=report.get("metrics", {}),
-            token_usage=tot,
-            average_faithfulness=(report.get("summary") or {}).get("average_faithfulness"),
-            notes=report.get("error"),
-        )
-
-        # One retrieval_results row per retrieved chunk observed this run.
-        items: list[dict[str, Any]] = []
-        for rec in processed:
-            for s in (rec.get("sources") or []):
-                if not isinstance(s, dict):
-                    continue
-                items.append({
-                    "question": rec.get("question", ""),
-                    "doc_id": s.get("doc_id", ""),
-                    "chunk_index": s.get("chunk_index", 0),
-                    "score": s.get("rerank_score") or 0.0,
-                    "source": s.get("source", ""),
-                })
-        record_retrieval_results(run_id, items)
     except Exception as exc:  # pragma: no cover - depends on Postgres
         logger.warning("Evaluation persistence failed (non-fatal): %s", exc)
 

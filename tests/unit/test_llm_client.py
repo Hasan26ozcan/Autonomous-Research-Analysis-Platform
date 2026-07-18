@@ -202,4 +202,4 @@ def test_make_llm_returns_wrapper(llm_client):
     # make_llm passed through the model + temperature to ChatOpenAI.
     _, kwargs = mock_chat.call_args
     assert kwargs["model"] == "gpt-4o"
-    assert kwargs["temperature"] == 0.0
+    assert kwargs["temperature"] == pytest.approx(0.0)

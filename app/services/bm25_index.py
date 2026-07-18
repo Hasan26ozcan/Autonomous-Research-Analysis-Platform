@@ -404,7 +404,9 @@ def index_chunks(state: AgentState) -> dict | None:
     # appended a second copy of every chunk to the corpus instead of
     # replacing the old one - remove_by_doc() already existed for exactly
     # this purpose but was never actually called here.
-    doc_id = chunks[0].get("doc_id", "") if chunks else ""
+    # `chunks` is guaranteed non-empty here (guarded by the `if not chunks`
+    # early return above), so we can take the first chunk directly.
+    doc_id = chunks[0].get("doc_id", "")
     if doc_id:
         removed = bm25_index.remove_by_doc(doc_id)
         if removed:

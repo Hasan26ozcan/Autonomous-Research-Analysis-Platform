@@ -27,9 +27,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Fixtures
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def make_final_state(
     answer: str = "The model achieved 97% accuracy [Source 1].",
@@ -70,12 +67,9 @@ def make_async_client():
     from httpx import ASGITransport, AsyncClient
 
     from app.api.main import app
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(transport=ASGITransport(app=app), base_url="https://test")
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# _safe_serialize() Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestSafeSerialize:
 
@@ -115,7 +109,7 @@ class TestSafeSerialize:
         result = _safe_serialize(state)
         assert result["answer"] == "The accuracy is 97%."
         assert result["query_type"] == "single"
-        assert result["faithfulness_score"] == 0.91
+        assert result["faithfulness_score"] == pytest.approx(0.91)
 
     def test_empty_state_returns_empty_dict(self):
         from app.core.orchestrator import _safe_serialize
@@ -136,9 +130,6 @@ class TestSafeSerialize:
         json.dumps(result)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# direct_answer() Node Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestDirectAnswer:
 
@@ -169,7 +160,7 @@ class TestDirectAnswer:
     def test_sets_faithfulness_score_to_one(self):
         """Parametric knowledge answers have no hallucination risk — score=1.0."""
         result, _ = self._run({"question": "What is RAG?"})
-        assert result["faithfulness_score"] == 1.0
+        assert result["faithfulness_score"] == pytest.approx(1.0)
 
     def test_returns_empty_sources(self):
         """Direct answers cite no documents — sources must be []."""
@@ -215,9 +206,6 @@ class TestDirectAnswer:
             assert key in valid_keys, f"direct_answer() returned invalid key '{key}'"
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# merge_results() Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestMergeResults:
 
@@ -238,9 +226,6 @@ class TestMergeResults:
         assert state == original_state
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ARAPOrchestrator.ingest() Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestOrchestratorIngest:
 
@@ -287,9 +272,6 @@ class TestOrchestratorIngest:
         assert init_state["filename"] == "report.pdf"
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ARAPOrchestrator.query() Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestOrchestratorQuery:
 
@@ -335,7 +317,7 @@ class TestOrchestratorQuery:
         final = make_final_state(latency_ms={"router": 312.0, "retrieval": 847.0})
         orc = self._make_orchestrator(final)
         result = await orc.query("Question?", "sess_1", "user_1")
-        assert result["latency_ms"]["router"] == 312.0
+        assert result["latency_ms"]["router"] == pytest.approx(312.0)
 
     @pytest.mark.asyncio
     async def test_passes_session_id_as_thread_id(self):
@@ -361,9 +343,6 @@ class TestOrchestratorQuery:
         assert init_state["retry_count"] == 0
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ARAPOrchestrator.health() Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestOrchestratorHealth:
 
@@ -425,9 +404,6 @@ class TestOrchestratorHealth:
         assert "qdrant" in result
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# FastAPI Endpoint Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestFastAPIHealth:
 
@@ -619,19 +595,16 @@ class TestFastAPIQuery:
         assert resp.status_code == 500
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# WebSocket Protocol Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestWebSocket:
 
-    async def _make_ws_client(self):
+    def _make_ws_client(self):
         """httpx WebSocket client via ASGI transport."""
         from httpx import ASGITransport, AsyncClient
 
         from app.api.main import app
         transport = ASGITransport(app=app)
-        client = AsyncClient(transport=transport, base_url="http://test")
+        client = AsyncClient(transport=transport, base_url="https://test")
         return client
 
     def _mock_stream(self, events: list[dict]):
@@ -762,9 +735,6 @@ class TestWebSocket:
         assert msg["type"] == "error"
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Graph Wiring Smoke Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestGraphWiring:
     """
@@ -810,9 +780,6 @@ class TestGraphWiring:
         assert isinstance(orchestrator, ARAPOrchestrator)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Additional coverage: branches not exercised by the happy-path tests above
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #
 # Targets (per coverage report):
 #   orchestrator.py: 128-131 (LangSmith tracing env setup),
@@ -913,7 +880,9 @@ class TestStreamQuery:
         orc._query_graph = MagicMock()
         orc._query_graph.stream.side_effect = _fake_stream
 
-        collected = [ev async for ev in orc.stream_query("Question?", "sess", "user")]
+        collected = []
+        async for ev in orc.stream_query("Question?", "sess", "user"):
+            collected.append(ev)
 
         assert collected[0]["node"] == "router"
         assert "raw_bytes" not in collected[1]["data"]      # stripped by _safe_serialize
@@ -1035,7 +1004,7 @@ class TestLifespan:
              patch("app.services.bm25_index.bm25_index", bm25), \
              patch("app.api.main._bm25_reload_listener"):
             async with lifespan(app):
-                pass
+                pass  # lifespan is expected to run to completion without raising
 
         emb.warmup.assert_called_once()
         bm25.load_from_qdrant.assert_called_once()
@@ -1062,7 +1031,7 @@ class TestLifespan:
              patch("app.services.bm25_index.bm25_index", bm25), \
              patch("app.api.main._bm25_reload_listener"):
             async with lifespan(app):
-                pass
+                pass  # lifespan is expected to run to completion without raising
         emb.warmup.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1092,7 +1061,7 @@ class TestLifespan:
              patch("app.services.bm25_index.bm25_index", bm25), \
              patch("app.api.main._bm25_reload_listener"):
             async with lifespan(app):
-                pass
+                pass  # lifespan is expected to run to completion without raising
 
 
 class TestBM25ReloadListener:
@@ -1150,7 +1119,7 @@ class TestWebSocketDirect:
         sent = [call.args[0] for call in ws.send_json.call_args_list]
         done = next(m for m in sent if m.get("type") == "done")
         assert done["sources"] == [{"index": 1, "text": "t"}]
-        assert done["faithfulness_score"] == 0.9
+        assert done["faithfulness_score"] == pytest.approx(0.9)
 
     @pytest.mark.asyncio
     async def test_fatal_exception_caught_by_outer_handler(self):

@@ -27,9 +27,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Fixtures
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def make_state(
     question: str = "What is the main finding?",
@@ -96,9 +93,6 @@ def make_router(llm_response: MagicMock | None = None, mem0_memories: list | Non
     return agent
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# RouterOutput Model Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestRouterOutput:
     """
@@ -141,23 +135,23 @@ class TestRouterOutput:
         """LLM sometimes returns -0.1 or other negative values. Must clamp to 0."""
         from app.agents.router import RouterOutput
         out = RouterOutput(type="single", confidence=-0.5, reason="test")
-        assert out.confidence == 0.0
+        assert out.confidence == pytest.approx(0.0)
 
     def test_confidence_above_one_is_clamped_to_one(self):
         """LLM sometimes returns 1.05 or 2.0. Must clamp to 1.0."""
         from app.agents.router import RouterOutput
         out = RouterOutput(type="single", confidence=1.5, reason="test")
-        assert out.confidence == 1.0
+        assert out.confidence == pytest.approx(1.0)
 
     def test_confidence_boundary_zero_is_valid(self):
         from app.agents.router import RouterOutput
         out = RouterOutput(type="direct", confidence=0.0, reason="Uncertain.")
-        assert out.confidence == 0.0
+        assert out.confidence == pytest.approx(0.0)
 
     def test_confidence_boundary_one_is_valid(self):
         from app.agents.router import RouterOutput
         out = RouterOutput(type="graph", confidence=1.0, reason="Certain.")
-        assert out.confidence == 1.0
+        assert out.confidence == pytest.approx(1.0)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -248,9 +242,6 @@ class TestRouteNodeStateContract:
         assert set(result.keys()) == expected_keys
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# _classify() — LLM Call and Error Handling Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestClassify:
 
@@ -262,7 +253,7 @@ class TestClassify:
         result = agent._classify("Which authors co-appear?")
         assert isinstance(result, RouterOutput)
         assert result.type == "graph"
-        assert result.confidence == 0.88
+        assert result.confidence == pytest.approx(0.88)
 
     def test_classify_falls_back_to_single_on_json_error(self):
         """
@@ -275,7 +266,7 @@ class TestClassify:
         agent.llm.invoke.return_value = MagicMock(content="Sorry, I cannot classify this.")
         result = agent._classify("Some question")
         assert result.type == "single"
-        assert result.confidence == 0.5
+        assert result.confidence == pytest.approx(0.5)
 
     def test_classify_falls_back_to_single_on_llm_exception(self):
         """If LLM raises (network error, timeout), must return safe fallback."""
@@ -285,7 +276,7 @@ class TestClassify:
         agent.llm.invoke.side_effect = ConnectionError("API unreachable")
         result = agent._classify("Some question")
         assert result.type == "single"
-        assert result.confidence == 0.5
+        assert result.confidence == pytest.approx(0.5)
 
     def test_classify_falls_back_on_invalid_type_in_json(self):
         """If LLM returns valid JSON but invalid type, Pydantic catches it."""
@@ -328,9 +319,6 @@ class TestClassify:
         assert any(test_question in m.content for m in human_messages)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# get_route() — Conditional Edge Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestGetRoute:
     """
@@ -378,9 +366,6 @@ class TestGetRoute:
             assert isinstance(result, str)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# _fetch_memories() — Mem0 Integration Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestFetchMemories:
 
@@ -395,7 +380,7 @@ class TestFetchMemories:
         memories = agent._fetch_memories("What is the best model?", "user_123")
         assert len(memories) == 2
         assert memories[0]["memory"] == "User works on flood prediction models."
-        assert memories[0]["score"] == 0.91
+        assert memories[0]["score"] == pytest.approx(0.91)
 
     def test_returns_empty_list_for_anonymous_user(self):
         """
@@ -490,13 +475,10 @@ class TestFetchMemories:
         memories = agent._fetch_memories("question", "user_1")
         assert len(memories) == 2
         assert memories[0]["memory"] == "Envelope-wrapped memory."
-        assert memories[0]["score"] == 0.88
+        assert memories[0]["score"] == pytest.approx(0.88)
         assert memories[1]["memory"] == "Second fact."
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Empty / Edge Case Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestEdgeCases:
 
@@ -534,9 +516,6 @@ class TestEdgeCases:
         assert isinstance(router_agent, RouterAgent)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Downstream Compatibility Test
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestDownstreamCompatibility:
     """
@@ -587,13 +566,10 @@ class TestDownstreamCompatibility:
         result = agent.route(state)
 
         # Both pre-existing and new key must be present
-        assert result["latency_ms"]["some_init_node"] == 5.2
+        assert result["latency_ms"]["some_init_node"] == pytest.approx(5.2)
         assert "router" in result["latency_ms"]
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Mem0 client initialization branches
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestMem0ClientInit:
     """Covers RouterAgent._get_mem0_client() initialization branches.

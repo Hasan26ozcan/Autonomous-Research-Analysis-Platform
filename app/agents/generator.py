@@ -478,22 +478,13 @@ class AnswerGenerator:
         # Take first 5 chunks — beyond that, the concatenated text exceeds
         # the cross-encoder's 512-token limit and gets silently truncated,
         # producing unreliable entailment scores for later sentences.
-        premise_parts = []
-        for chunk in retrieved_chunks[:5]:
-            text = chunk.get("original_text") or chunk.get("text", "")
-            if text:
-                premise_parts.append(text)
-        premise = " ".join(premise_parts)[:4000]   # extra safety cap in characters
+        premise = self._judge_build_premise(retrieved_chunks)
 
         # ── Split draft into sentences ─────────────────────────────────────────
         # Split on sentence-ending punctuation followed by whitespace.
         # Minimum 20 chars filters out inline citations like "[Source 1]"
         # and headers like "**Key Findings:**" that are not factual claims.
-        sentences = [
-            s.strip()
-            for s in re.split(r"(?<=[.!?])\s+", draft)
-            if len(s.strip()) >= 20
-        ]
+        sentences = self._judge_split_sentences(draft)
 
         if not sentences:
             # Draft has no sentence-length claims (e.g. one-liner answer)
@@ -535,6 +526,64 @@ class AnswerGenerator:
         retries_exhausted = retry_count >= settings.max_retries
         passed = faithfulness_score >= settings.faithfulness_threshold
 
+        return self._judge_build_update(
+            state, t0, faithfulness_score, draft, retry_count,
+            retries_exhausted, passed,
+        )
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # LangGraph Conditional Edge: should_retry()
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Private: judge() helpers
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def _judge_build_premise(self, retrieved_chunks: list[dict]) -> str:
+        """
+        Build the NLI premise text from the first 5 retrieved chunks.
+
+        Uses original_text (pre-enrichment) when available so the NLI model
+        judges entailment against document content, not our metadata wrappers.
+        A character cap guards against exceeding the cross-encoder's limit.
+        """
+        premise_parts = []
+        for chunk in retrieved_chunks[:5]:
+            text = chunk.get("original_text") or chunk.get("text", "")
+            if text:
+                premise_parts.append(text)
+        return " ".join(premise_parts)[:4000]   # extra safety cap in characters
+
+    def _judge_split_sentences(self, draft: str) -> list[str]:
+        """
+        Split the draft answer into sentence-length claims for NLI scoring.
+
+        Splits on sentence-ending punctuation + whitespace; the 20-char minimum
+        filters inline citations and headers that are not factual claims.
+        """
+        return [
+            s.strip()
+            for s in re.split(r"(?<=[.!?])\s+", draft)
+            if len(s.strip()) >= 20
+        ]
+
+    def _judge_build_update(
+        self,
+        state: AgentState,
+        t0: float,
+        faithfulness_score: float,
+        draft: str,
+        retry_count: int,
+        retries_exhausted: bool,
+        passed: bool,
+    ) -> dict:
+        """
+        Build the judge() state update: pass, reject, or force-finalize.
+
+        Mirrors the inlined decision logic exactly: on pass (or exhausted
+        retries) approves with answer=draft; otherwise rejects and bumps
+        retry_count to route back to generate() with the stricter prompt.
+        """
         elapsed_ms = (time.perf_counter() - t0) * 1000
         update: dict = {
             "faithfulness_score": round(faithfulness_score, 4),
@@ -565,10 +614,6 @@ class AnswerGenerator:
             update["retry_count"] = retry_count + 1
 
         return update
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # LangGraph Conditional Edge: should_retry()
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def should_retry(self, state: AgentState) -> str:
         """

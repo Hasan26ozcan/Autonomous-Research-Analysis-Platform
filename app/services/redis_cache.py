@@ -175,12 +175,15 @@ def _serialize_messages(messages: Any) -> str:
 # Temporary pipeline state (ingest in-flight flag)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+# Redis key prefix for the "document is being ingested" flag: processing:<doc_id>.
+PIPELINE_STATE_PREFIX = "processing:"
+
 def pipeline_state_set(doc_id: str, ttl: int | None = None) -> None:
     """Mark `doc_id` as currently being ingested (processing:<doc_id>)."""
     c = _get_client()
     if c is None or not doc_id:
         return
-    key = "processing:" + doc_id
+    key = PIPELINE_STATE_PREFIX + doc_id
     try:
         c.set(key, "1", ex=ttl or settings.pipeline_state_ttl_seconds)
     except Exception as e:  # pragma: no cover - depends on Redis
@@ -192,7 +195,7 @@ def pipeline_state_is_processing(doc_id: str) -> bool:
     c = _get_client()
     if c is None or not doc_id:
         return False
-    key = "processing:" + doc_id
+    key = PIPELINE_STATE_PREFIX + doc_id
     try:
         return c.exists(key) > 0
     except Exception:  # pragma: no cover - depends on Redis
@@ -204,7 +207,7 @@ def pipeline_state_clear(doc_id: str) -> None:
     c = _get_client()
     if c is None or not doc_id:
         return
-    key = "processing:" + doc_id
+    key = PIPELINE_STATE_PREFIX + doc_id
     try:
         c.delete(key)
     except Exception as e:  # pragma: no cover - depends on Redis

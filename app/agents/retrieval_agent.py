@@ -340,6 +340,47 @@ class RetrievalAgent:
     # LangGraph Node: retrieve_multi() — multi_hop route
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    def _retrieve_multi_collect_candidates(
+        self,
+        sub_questions: list[str],
+        doc_id: str | None,
+        top_k: int,
+    ) -> dict[tuple, dict]:
+        """
+        Retrieve for each sub-question and accumulate deduplicated candidates.
+
+        Each sub-question triggers a HyDE rewrite + hybrid retrieval. Candidates
+        are keyed by (doc_id, chunk_index); when the same chunk appears twice we
+        keep the one with the higher rrf_score. Reranking happens once later,
+        over the merged pool (see retrieve_multi()).
+        """
+        candidate_pool: dict[tuple, dict] = {}
+
+        for i, sub_q in enumerate(sub_questions):
+            # Proactive pacing - same technique as ingestion's chunk loops
+            # (see contextual_enricher.enrich()). Each sub-question triggers
+            # an LLM call (_hyde_rewrite), so multi-hop queries with several
+            # sub-questions can burst-fire calls just like chunk loops do.
+            if i > 0 and settings.llm_call_min_interval_seconds > 0:
+                time.sleep(settings.llm_call_min_interval_seconds)
+
+            hyde_passage = self._hyde_rewrite(sub_q)
+            sub_chunks = self._full_retrieval_pipeline(
+                query_text=hyde_passage,
+                original_question=sub_q,
+                doc_id=doc_id,
+                # Retrieve more per sub-question: after dedup we need top_k total
+                top_k=max(top_k, settings.top_k_retrieval),
+                skip_final_rerank=True,   # rerank once at the end, not per sub-q
+            )
+            for chunk in sub_chunks:
+                dedup_key = (chunk.get("doc_id", ""), chunk.get("chunk_index", 0))
+                existing = candidate_pool.get(dedup_key)
+                if existing is None or chunk.get("rrf_score", 0) > existing.get("rrf_score", 0):
+                    candidate_pool[dedup_key] = chunk
+
+        return candidate_pool
+
     def retrieve_multi(self, state: AgentState) -> dict:
         """
         LangGraph node: multi-hop retrieval with query decomposition.
@@ -412,32 +453,9 @@ class RetrievalAgent:
         )
 
         # Step 2: Retrieve for each sub-question, accumulate all candidates
-        # key = (doc_id, chunk_index) → deduplication key
-        # value = best chunk dict seen so far for this key
-        candidate_pool: dict[tuple, dict] = {}
-
-        for i, sub_q in enumerate(sub_questions):
-            # Proactive pacing - same technique as ingestion's chunk loops
-            # (see contextual_enricher.enrich()). Each sub-question triggers
-            # an LLM call (_hyde_rewrite), so multi-hop queries with several
-            # sub-questions can burst-fire calls just like chunk loops do.
-            if i > 0 and settings.llm_call_min_interval_seconds > 0:
-                time.sleep(settings.llm_call_min_interval_seconds)
-
-            hyde_passage = self._hyde_rewrite(sub_q)
-            sub_chunks = self._full_retrieval_pipeline(
-                query_text=hyde_passage,
-                original_question=sub_q,
-                doc_id=doc_id,
-                # Retrieve more per sub-question: after dedup we need top_k total
-                top_k=max(top_k, settings.top_k_retrieval),
-                skip_final_rerank=True,   # rerank once at the end, not per sub-q
-            )
-            for chunk in sub_chunks:
-                dedup_key = (chunk.get("doc_id", ""), chunk.get("chunk_index", 0))
-                existing = candidate_pool.get(dedup_key)
-                if existing is None or chunk.get("rrf_score", 0) > existing.get("rrf_score", 0):
-                    candidate_pool[dedup_key] = chunk
+        candidate_pool = self._retrieve_multi_collect_candidates(
+            sub_questions, doc_id, top_k,
+        )
 
         # Step 3: Cross-encoder rerank over the deduplicated merged pool
         all_candidates = list(candidate_pool.values())

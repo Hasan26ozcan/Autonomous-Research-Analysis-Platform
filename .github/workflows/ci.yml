@@ -32,10 +32,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.11"
           cache: "pip"
@@ -53,7 +53,7 @@ jobs:
 
       - name: Upload HTML coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: coverage-html
           path: htmlcov/
@@ -61,7 +61,7 @@ jobs:
       - name: Upload coverage to Codecov
         # Public repo: no token required. For a private repo, add a
         # CODECOV_TOKEN secret in Settings -> Secrets and reference it here.
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
@@ -73,10 +73,10 @@ jobs:
     continue-on-error: true
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.11"
 
@@ -92,10 +92,10 @@ jobs:
     continue-on-error: true
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.11"
           cache: "pip"
@@ -115,10 +115,10 @@ jobs:
     continue-on-error: true
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.11"
 
@@ -134,7 +134,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Run pre-commit
-        uses: pre-commit/action@v3.0.1
+        uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd  # v3.0.1

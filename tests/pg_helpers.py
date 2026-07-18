@@ -59,10 +59,10 @@ class FakePGCursor:
             raise self._pool.raise_on
 
     def executemany(self, sql: str, params: Any = None) -> None:
-        self.executed.append((sql, params))
-        self._pool.all_executed.append((sql, params))
-        if self._pool.raise_on is not None:
-            raise self._pool.raise_on
+        # Batch variant: the whole parameter set is recorded as a single
+        # scripted call. Delegate to execute() so the recording/raise-on
+        # behavior stays identical to a single-statement call.
+        self.execute(sql, params)
 
     def fetchone(self) -> Any:
         if self._pool.raise_on is not None:
@@ -91,6 +91,10 @@ class FakePGConn:
         self.committed = False
 
     def cursor(self, cursor_factory: Any = None) -> FakePGCursor:
+        # cursor_factory is accepted for psycopg2 API compatibility (callers
+        # such as analytics pass cursor_factory=RealDictCursor) but is ignored
+        # by the fake, which always returns a FakePGCursor.
+        self._cursor_factory = cursor_factory
         return FakePGCursor(self._pool)
 
     def commit(self) -> None:
@@ -98,6 +102,8 @@ class FakePGConn:
         self._pool.committed = True
 
     def close(self) -> None:
+        # intentionally empty: the fake connection owns no real socket to tear
+        # down, so there is nothing to release on close().
         pass
 
 

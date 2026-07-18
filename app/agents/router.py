@@ -407,7 +407,7 @@ class RouterAgent:
 
         if not question:
             logger.error("Router called with empty question — defaulting to 'single'")
-            return self._fallback_update(state, t0, reason="empty question")
+            return self._fallback_update(state, t0)
 
         # ── Task 1: Classify query ─────────────────────────────────────────────
         routing_result = self._classify(question)
@@ -552,13 +552,13 @@ class RouterAgent:
             return RouterOutput(**parsed_dict)
 
         except json.JSONDecodeError as e:
-            logger.error(
+            logger.exception(
                 "Router: JSON parse error (falling back to 'single'): %s | "
                 "raw response: %s",
                 e, raw_response[:200] if 'raw_response' in dir() else "N/A",
             )
         except Exception as e:
-            logger.error(
+            logger.exception(
                 "Router: classification failed (falling back to 'single'): %s", e
             )
 
@@ -664,7 +664,7 @@ class RouterAgent:
     # Private: Fallback State Update
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def _fallback_update(self, state: AgentState, t0: float, reason: str) -> dict:
+    def _fallback_update(self, state: AgentState, t0: float) -> dict:
         """
         Return a safe fallback state update when the router cannot classify.
 

@@ -19,14 +19,11 @@ All LLM, NLI, and Mem0 calls are mocked. Tests run offline in < 2 seconds.
 Run:
     pytest tests/unit/test_phase7_generator.py -v
 """
-
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Fixtures & Helpers
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def make_chunk(
     text: str = "The model achieved 97% accuracy on the test dataset.",
@@ -151,9 +148,6 @@ def make_generator(
     return gen
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# _build_context() Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestBuildContext:
 
@@ -224,9 +218,6 @@ class TestBuildContext:
         assert context.strip() == ""
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# _build_user_prompt() Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestBuildUserPrompt:
 
@@ -266,9 +257,6 @@ class TestBuildUserPrompt:
         assert context_pos < question_pos, "Context must precede question in prompt"
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# _format_sources() Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestFormatSources:
 
@@ -319,9 +307,6 @@ class TestFormatSources:
         assert self.gen._format_sources([]) == []
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# generate() Node — State Contract Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestGenerateNode:
 
@@ -345,8 +330,8 @@ class TestGenerateNode:
         gen = make_generator()
         state = make_state(latency_ms={"router": 312.0, "retrieval": 847.0})
         result = gen.generate(state)
-        assert result["latency_ms"]["router"] == 312.0
-        assert result["latency_ms"]["retrieval"] == 847.0
+        assert result["latency_ms"]["router"] == pytest.approx(312.0)
+        assert result["latency_ms"]["retrieval"] == pytest.approx(847.0)
         assert "generation" in result["latency_ms"]
 
     def test_uses_standard_prompt_on_first_attempt(self):
@@ -399,9 +384,6 @@ class TestGenerateNode:
         assert len(result["sources"]) == 4
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# judge() Node — Faithfulness Scoring Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestJudgeNode:
 
@@ -456,7 +438,7 @@ class TestJudgeNode:
             retrieved_chunks=[],
         ))
         assert result["judge_passed"] is True
-        assert result["faithfulness_score"] == 1.0
+        assert result["faithfulness_score"] == pytest.approx(1.0)
         gen._nli_model.predict.assert_not_called()
 
     def test_passes_immediately_for_empty_draft(self):
@@ -536,8 +518,8 @@ class TestJudgeNode:
             draft_answer="The model achieved 97% accuracy here.",
             latency_ms=prior,
         ))
-        assert result["latency_ms"]["router"] == 312.0
-        assert result["latency_ms"]["generation"] == 1240.0
+        assert result["latency_ms"]["router"] == pytest.approx(312.0)
+        assert result["latency_ms"]["generation"] == pytest.approx(1240.0)
         assert "judge" in result["latency_ms"]
 
     def test_answer_not_set_when_judge_rejects(self):
@@ -551,9 +533,6 @@ class TestJudgeNode:
         assert "answer" not in result
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# should_retry() Conditional Edge Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestShouldRetry:
 
@@ -587,9 +566,6 @@ class TestShouldRetry:
             assert result in valid_returns
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# store_memory() Node Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestStoreMemory:
 
@@ -645,9 +621,6 @@ class TestStoreMemory:
         assert result is None
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Retry Loop Integration Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestRetryLoop:
     """
@@ -736,9 +709,6 @@ class TestRetryLoop:
         assert route == "memory_store"
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Downstream API Compatibility Tests (Phase 8)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestDownstreamAPICompatibility:
     """
@@ -785,9 +755,6 @@ class TestDownstreamAPICompatibility:
         assert isinstance(generator, AnswerGenerator)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Lazy model / Mem0 client init branches
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestGeneratorExtra:
 

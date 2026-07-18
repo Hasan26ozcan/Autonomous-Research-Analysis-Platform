@@ -26,9 +26,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Fixtures & Helpers
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def make_chunk(text: str, doc_id: str = "doc_abc", page: int = 1) -> dict:
     """Build a chunk dict matching Phase 2/3 output contract."""
@@ -81,9 +78,6 @@ def make_agent_with_mocks():
     return agent
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Triple / Pydantic Model Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestTripleModel:
 
@@ -91,7 +85,7 @@ class TestTripleModel:
         from app.agents.graph_agent import Triple
         t = Triple(head="FloodNet", relation="developed_by", tail="MIT", confidence=0.9)
         assert t.head == "FloodNet"
-        assert t.confidence == 0.9
+        assert t.confidence == pytest.approx(0.9)
 
     def test_empty_head_rejected(self):
         from pydantic import ValidationError
@@ -142,9 +136,6 @@ class TestTripleModel:
         assert result.entities == []
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Cypher Safety Validation Tests — the most critical security boundary
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestValidateCypher:
 
@@ -154,7 +145,7 @@ class TestValidateCypher:
             "MATCH (h:Entity)-[r:RELATES_TO]->(t:Entity) "
             "RETURN h.name, r.relation, t.name LIMIT 20"
         )
-        is_safe, reason = _validate_cypher(cypher)
+        is_safe, _ = _validate_cypher(cypher)
         assert is_safe is True
 
     def test_empty_query_rejected(self):
@@ -165,7 +156,7 @@ class TestValidateCypher:
 
     def test_whitespace_only_query_rejected(self):
         from app.agents.graph_agent import _validate_cypher
-        is_safe, reason = _validate_cypher("   \n  ")
+        is_safe, _ = _validate_cypher("   \n  ")
         assert is_safe is False
 
     @pytest.mark.parametrize("keyword", [
@@ -183,13 +174,13 @@ class TestValidateCypher:
         """Case-insensitivity: 'delete' (lowercase) must be caught too."""
         from app.agents.graph_agent import _validate_cypher
         cypher = "MATCH (n) delete n RETURN n LIMIT 10"
-        is_safe, reason = _validate_cypher(cypher)
+        is_safe, _ = _validate_cypher(cypher)
         assert is_safe is False
 
     def test_load_csv_rejected(self):
         from app.agents.graph_agent import _validate_cypher
         cypher = "LOAD CSV FROM 'file:///etc/passwd' AS row RETURN row LIMIT 10"
-        is_safe, reason = _validate_cypher(cypher)
+        is_safe, _ = _validate_cypher(cypher)
         assert is_safe is False
 
     def test_missing_limit_rejected(self):
@@ -230,9 +221,6 @@ class TestValidateCypher:
         assert is_safe is True
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Triple Extraction (Ingestion) Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestExtractTriplesFromText:
 
@@ -295,9 +283,6 @@ class TestExtractTriplesFromText:
         assert word_count_sent <= 1500
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Neo4j Batch Write Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestBatchUpsertTriples:
 
@@ -342,9 +327,6 @@ class TestBatchUpsertTriples:
         assert result == 0
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Query-Time Entity Extraction Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestExtractQueryEntities:
 
@@ -373,9 +355,6 @@ class TestExtractQueryEntities:
         assert result == []
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Cypher Generation Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestGenerateCypher:
 
@@ -420,9 +399,6 @@ class TestGenerateCypher:
         assert result == "MATCH (n) RETURN n LIMIT 5"
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Cypher Execution Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestExecuteCypher:
 
@@ -484,9 +460,6 @@ class TestExecuteCypher:
         assert result == []
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# extract_and_store_node() — Ingest Graph Node Contract Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestExtractAndStoreNode:
 
@@ -575,9 +548,6 @@ class TestExtractAndStoreNode:
             assert key in valid_keys
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# graph_retrieve() — Query Graph Node Contract Tests
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestGraphRetrieveNode:
 
@@ -628,7 +598,7 @@ class TestGraphRetrieveNode:
 
         state = make_state(latency_ms={"router": 200.0})
         result = agent.graph_retrieve(state)
-        assert result["latency_ms"]["router"] == 200.0
+        assert result["latency_ms"]["router"] == pytest.approx(200.0)
         assert "graph" in result["latency_ms"]
 
     def test_empty_question_returns_empty_paths(self):
@@ -692,9 +662,6 @@ class TestGraphRetrieveNode:
         mock_session.execute_read.assert_called_once()
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Downstream Compatibility — Phase 7 Generator Expectations
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestDownstreamCompatibility:
     """
@@ -746,9 +713,6 @@ class TestDownstreamCompatibility:
         assert isinstance(kg_agent, KnowledgeGraphAgent)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Extra coverage: JSON parsing edge branches + lazy driver + defensive handlers
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class TestGraphAgentExtra:
     """Covers graph_agent.py lines 150, 157, 169-183, 451-462,

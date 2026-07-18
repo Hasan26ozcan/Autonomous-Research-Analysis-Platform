@@ -76,9 +76,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from typing import Annotated
 
 from celery.result import AsyncResult
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -169,7 +171,7 @@ async def lifespan(app: FastAPI):
         _ = orchestrator.query_graph
         logger.info("Both LangGraph graphs compiled successfully.")
     except Exception as e:
-        logger.error("LangGraph compilation failed — API may not work: %s", e)
+        logger.exception("LangGraph compilation failed — API may not work: %s", e)
 
     # Rebuild the API process's in-memory BM25 keyword index from Qdrant
     # (the source of truth). Ingestion runs in a separate Celery worker
@@ -373,8 +375,19 @@ async def health():
     return HealthResponse(api="ok", **component_status)
 
 
-@app.post("/ingest", response_model=IngestResponse, tags=["Documents"])
-async def ingest_document(file: UploadFile = File(...), user_id: str = "default"):
+@app.post(
+    "/ingest",
+    response_model=IngestResponse,
+    tags=["Documents"],
+    responses={
+        400: {"description": "Only PDF files are accepted."},
+        413: {"description": "File too large (max 50 MB)."},
+        500: {"description": "Ingestion queue temporarily unavailable."},
+    },
+)
+async def ingest_document(
+    file: Annotated[UploadFile, File()], user_id: str = "default"
+):
     """
     Upload a PDF and process it through the full ingestion pipeline **asynchronously**.
 
@@ -422,13 +435,13 @@ async def ingest_document(file: UploadFile = File(...), user_id: str = "default"
             user_id=user_id,
         )
     except Exception as exc:
-        logger.error("Failed to enqueue ingest task (broker unreachable?): %s", exc)
+        logger.exception("Failed to enqueue ingest task (broker unreachable?): %s", exc)
         raise HTTPException(
             status_code=500,
             detail="Ingestion queue is temporarily unavailable. Please try again later.",
         ) from exc
 
-    logger.info("Ingest task queued: task_id=%s, filename=%s", task.id, filename)
+    logger.info("Ingest task queued: task_id=%s", task.id)
 
     return IngestResponse(
         task_id=task.id,
@@ -466,7 +479,12 @@ async def get_ingest_status(task_id: str):
     return IngestStatusResponse(**response)
 
 
-@app.post("/query", response_model=QueryResponse, tags=["Query"])
+@app.post(
+    "/query",
+    response_model=QueryResponse,
+    tags=["Query"],
+    responses={500: {"description": "Query failed."}},
+)
 async def query(req: QueryRequest):
     """
     Answer a question using the adaptive RAG pipeline (synchronous).
@@ -494,8 +512,8 @@ async def query(req: QueryRequest):
         )
 
         logger.info(
-            "Query completed: type=%s faithfulness=%.2f session=%s",
-            result.get("query_type"), result.get("faithfulness_score") or 0.0, req.session_id,
+            "Query completed: type=%s faithfulness=%.2f",
+            result.get("query_type"), result.get("faithfulness_score") or 0.0,
         )
 
         return QueryResponse(
@@ -515,7 +533,11 @@ async def query(req: QueryRequest):
         ) from e
 
 
-@app.post("/eval", tags=["Evaluation"])
+@app.post(
+    "/eval",
+    tags=["Evaluation"],
+    responses={500: {"description": "Evaluation failed."}},
+)
 async def eval_endpoint(req: EvalRequest):
     """
     Phase 9 — run the RAGAS evaluation suite and persist results to Postgres.
@@ -671,6 +693,70 @@ loadAll();
 </html>"""
 
 
+def _parse_ws_payload(raw_message: str) -> dict | None:
+    """Parse an incoming WebSocket message into a JSON payload.
+
+    Returns the parsed dict, or ``None`` when the message is not valid JSON.
+    """
+    try:
+        return json.loads(raw_message)
+    except json.JSONDecodeError:
+        return None
+
+
+async def _send_ws_error(websocket: WebSocket, message: str) -> None:
+    """Send a single error frame to the WebSocket client."""
+    await websocket.send_json({"type": "error", "message": message})
+
+
+async def _run_ws_query(
+    websocket: WebSocket,
+    question: str,
+    session_id: str,
+    user_id: str,
+    doc_id: str | None,
+) -> None:
+    """Run one question through the streaming query pipeline.
+
+    Forwards each LangGraph node update to the client, accumulates the final
+    answer/sources/score, then emits the consolidated ``done`` frame.
+    """
+    final_answer = ""
+    final_sources: list = []
+    final_score: float | None = None
+    final_type: str | None = None
+
+    async for event in orchestrator.stream_query(
+        question=question,
+        session_id=session_id,
+        user_id=user_id,
+        doc_id=doc_id,
+    ):
+        await websocket.send_json({"type": "update", **event})
+
+        data = event.get("data", {})
+        if data.get("answer"):
+            final_answer = data["answer"]
+        if data.get("sources"):
+            final_sources = data["sources"]
+        if data.get("faithfulness_score") is not None:
+            final_score = data["faithfulness_score"]
+        if data.get("query_type"):
+            final_type = data["query_type"]
+
+    await websocket.send_json({
+        "type":               "done",
+        "answer":             final_answer,
+        "sources":            final_sources,
+        "faithfulness_score": final_score,
+        "query_type":         final_type,
+    })
+    logger.info(
+        "WebSocket query done: type=%s faithfulness=%.2f",
+        final_type, final_score or 0.0,
+    )
+
+
 @app.websocket("/ws/{session_id}")
 async def websocket_query(websocket: WebSocket, session_id: str):
     """
@@ -695,84 +781,41 @@ async def websocket_query(websocket: WebSocket, session_id: str):
       same WebSocket connection AND across reconnections with the same session_id.
     """
     await websocket.accept()
-    logger.info("WebSocket connected: session_id=%s", session_id)
+    logger.info("WebSocket connected")
 
     try:
         while True:
-            # Wait for the next question from the client
             raw_message = await websocket.receive_text()
 
-            try:
-                payload = json.loads(raw_message)
-            except json.JSONDecodeError:
-                await websocket.send_json({
-                    "type":    "error",
-                    "message": "Invalid JSON. Expected: {\"question\": \"...\", ...}",
-                })
+            payload = _parse_ws_payload(raw_message)
+            if payload is None:
+                await _send_ws_error(
+                    websocket,
+                    "Invalid JSON. Expected: {\"question\": \"...\", ...}",
+                )
                 continue
 
             question = payload.get("question", "").strip()
             if not question:
-                await websocket.send_json({
-                    "type":    "error",
-                    "message": "Field 'question' is required and must be non-empty.",
-                })
+                await _send_ws_error(
+                    websocket,
+                    "Field 'question' is required and must be non-empty.",
+                )
                 continue
 
             user_id = payload.get("user_id", "anonymous")
-            doc_id  = payload.get("doc_id")
-
-            # Accumulate final answer/sources/score across all streamed events
-            final_answer = ""
-            final_sources: list = []
-            final_score: float | None = None
-            final_type: str | None = None
+            doc_id = payload.get("doc_id")
 
             try:
-                async for event in orchestrator.stream_query(
-                    question=question,
-                    session_id=session_id,
-                    user_id=user_id,
-                    doc_id=doc_id,
-                ):
-                    # Stream each node update to the client
-                    await websocket.send_json({"type": "update", **event})
-
-                    # Extract final answer and sources from the last updates
-                    data = event.get("data", {})
-                    if data.get("answer"):
-                        final_answer = data["answer"]
-                    if data.get("sources"):
-                        final_sources = data["sources"]
-                    if data.get("faithfulness_score") is not None:
-                        final_score = data["faithfulness_score"]
-                    if data.get("query_type"):
-                        final_type = data["query_type"]
-
-                # Send the final consolidated response
-                await websocket.send_json({
-                    "type":              "done",
-                    "answer":            final_answer,
-                    "sources":           final_sources,
-                    "faithfulness_score": final_score,
-                    "query_type":        final_type,
-                })
-                logger.info(
-                    "WebSocket query done: session=%s type=%s faithfulness=%.2f",
-                    session_id, final_type, final_score or 0.0,
-                )
-
+                await _run_ws_query(websocket, question, session_id, user_id, doc_id)
             except Exception as e:
-                logger.exception("WebSocket pipeline error: session=%s %s", session_id, e)
-                await websocket.send_json({
-                    "type":    "error",
-                    "message": f"Pipeline error: {str(e)[:200]}",
-                })
+                logger.exception("WebSocket pipeline error: %s", e)
+                await _send_ws_error(websocket, f"Pipeline error: {str(e)[:200]}")
 
     except WebSocketDisconnect:
-        logger.info("WebSocket disconnected: session_id=%s", session_id)
+        logger.info("WebSocket disconnected")
     except Exception as e:
-        logger.exception("WebSocket fatal error: session=%s %s", session_id, e)
+        logger.exception("WebSocket fatal error: %s", e)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -787,9 +830,12 @@ def main() -> None:
     without actually binding a socket.
     """
     import uvicorn
+    # 0.0.0.0 is required for container networking (binds all interfaces inside
+    # the Docker network); override with the APP_HOST env var if needed.
+    host = os.getenv("APP_HOST", "0.0.0.0")
     uvicorn.run(
         "app.api.main:app",
-        host="0.0.0.0",
+        host=host,
         port=8000,
         reload=True,    # auto-reload on file changes (dev only)
         log_level="info",

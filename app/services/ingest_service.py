@@ -48,9 +48,7 @@ def run_ingest_pipeline(
     chunks: list = []
     try:
         # 1. Write to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(file_content)
-            temp_path = tmp.name
+        temp_path = _write_temp_pdf(file_content)
 
         # 2. Chunking
         chunks = chunk_pdf(temp_path)
@@ -69,122 +67,14 @@ def run_ingest_pipeline(
         doc_id = chunks[0].get("doc_id", "unknown")
         logger.info(f"Chunked {filename}: {len(chunks)} chunks (doc_id={doc_id})")
 
-        # Phase 5: mark this document as being ingested (processing:<doc_id>).
-        # Lets a second concurrent upload of the same file be detected, and
-        # the flag auto-expires via settings.pipeline_state_ttl_seconds.
-        try:
-            pipeline_state_set(doc_id)
-        except Exception as e:  # pragma: no cover - defensive
-            logger.debug("pipeline_state_set failed (non-fatal): %s", e)
-
-        # Phase 10: worker log — ingest started.
-        try:
-            log_worker("ingest", doc_id, "info", f"started ingest of {filename}")
-        except Exception:  # pragma: no cover - defensive
-            pass
-
-        # Phase 1: mark the document as being processed (metadata lifecycle).
-        try:
-            total_pages = pdf_page_count(temp_path)
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning("Could not read PDF page count (non-fatal): %s", e)
-            total_pages = 0
-        try:
-            update_document_status(doc_id, "processing")
-        except Exception as e:  # pragma: no cover - defensive
-            logger.debug("update_document_status(processing) failed: %s", e)
-
-        # 3. Contextual Enrichment (per‑chunk LLM call to add context)
-        # Build ONE document anchor (first 400 words of the document beginning)
-        # and pass it to every chunk so the enricher situates each chunk in the
-        # full document — instead of each chunk using its own text as the anchor
-        # (which degraded enrichment quality in the Celery ingest path).
-        doc_anchor = " ".join(chunks[0]["text"].split()[:400]) if chunks else ""
-        enriched_chunks = []
-        for idx, chunk in enumerate(chunks):
-            enriched_text = enrich_chunk(
-                chunk["text"],
-                chunk.get("page", 1),
-                doc_id,
-                idx,
-                doc_anchor=doc_anchor,
-            )
-            enriched_chunks.append({
-                **chunk,
-                "text": enriched_text,          # enriched text
-                "original_text": chunk["text"]  # keep original for cross‑encoder
-            })
-
-        success_count = sum(1 for c in enriched_chunks if c["text"] != c["original_text"])
-        logger.info(f"Contextual enrichment: {success_count}/{len(chunks)} chunks enriched.")
-
-        # 4. Embedding (batch)
-        texts = [c["text"] for c in enriched_chunks]
-        embeddings = embedder.embed(texts)   # returns list of lists
-
-        # 5. Upsert to Qdrant
-        # vector_store.upsert builds the PointStructs (with deterministic,
-        # dedupe-friendly IDs) from (chunks, embeddings) and batches the write,
-        # mirroring the LangGraph store_chunks node.
-        vector_store.upsert(enriched_chunks, embeddings)
-        logger.info(f"Upserted {len(enriched_chunks)} points to Qdrant.")
-
-        # 6. BM25 Index (keyword search)
-        # bm25_index exposes add_chunks(chunks) (chunks = list of dicts with
-        # text/page/doc_id/...). Remove any pre-existing entries for this doc_id
-        # first so re-ingesting the same PDF replaces, never duplicates.
-        bm25_index.remove_by_doc(doc_id)
-        bm25_index.add_chunks(enriched_chunks)
-        logger.info(f"BM25 indexed {len(enriched_chunks)} chunks.")
-
-        # Notify API processes to rebuild their in-memory BM25 index from
-        # Qdrant (the source of truth) so this doc becomes keyword-searchable
-        # without an API restart. Best-effort, non-fatal.
-        _notify_bm25_reload()
-
-        # 7. Parallel KG Extraction (5 workers) → write triples to Neo4j
-        # Delegates to the same KnowledgeGraphAgent node the LangGraph ingest
-        # graph uses: parallel LLM extraction across chunks + batched Neo4j upsert.
-        kg_result = kg_agent.extract_and_store_node(
-            {"chunks": enriched_chunks, "doc_id": doc_id}
-        )
-        all_triples = kg_result.get("kg_entities", [])
-        logger.info(
-            f"KG extraction complete: {len(all_triples)} triples from "
-            f"{len(chunks)} chunks, written to Neo4j."
-        )
-
-        # 8. Save metadata to PostgreSQL (Phase 1)
-        # record_document / record_chunk_metadata are now synchronous (psycopg2)
-        # and best-effort: they catch their own errors and log them. A Postgres
-        # outage should never fail an ingest - these audit tables are non-critical.
-        try:
-            record_chunk_metadata(doc_id, enriched_chunks)
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning("PostgreSQL chunk metadata save failed (non-fatal): %s", e)
-
-        try:
-            record_document(
-                doc_id, filename, len(chunks), len(all_triples),
-                status="ready", total_pages=total_pages,
-            )
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning("PostgreSQL metadata save failed (non-fatal): %s", e)
-
-        # Phase 5: clear the in-flight ingest flag (success path).
-        try:
-            pipeline_state_clear(doc_id)
-        except Exception:  # pragma: no cover - defensive
-            pass
-
-        # Phase 10: worker log — ingest completed.
-        try:
-            log_worker(
-                "ingest", doc_id, "info",
-                f"completed: {len(chunks)} chunks, {len(all_triples)} triples",
-            )
-        except Exception:  # pragma: no cover - defensive
-            pass
+        _mark_ingest_start(doc_id, filename)
+        total_pages = _prepare_document(temp_path, doc_id)
+        enriched_chunks = _enrich_chunks(chunks, doc_id)
+        embeddings = embedder.embed([c["text"] for c in enriched_chunks])
+        _store_chunks(enriched_chunks, embeddings, doc_id)
+        all_triples = _extract_kg(enriched_chunks, doc_id)
+        _save_metadata(doc_id, filename, chunks, all_triples, total_pages)
+        _finalize_ingest(doc_id, chunks, all_triples)
 
         return {
             "status": "success",
@@ -194,35 +84,150 @@ def run_ingest_pipeline(
         }
 
     except Exception as e:
-        logger.error(f"Ingest pipeline failed: {str(e)}", exc_info=True)
-        # Phase 1: mark the document as failed so its lifecycle is observable.
-        try:
-            update_document_status(doc_id, "error")
-        except Exception:  # pragma: no cover - defensive
-            pass
-        # Phase 5: clear the in-flight ingest flag.
-        try:
-            pipeline_state_clear(doc_id)
-        except Exception:  # pragma: no cover - defensive
-            pass
-        # Phase 10: worker log — ingest failed.
-        try:
-            log_worker("ingest", doc_id, "error", str(e)[:500])
-        except Exception:  # pragma: no cover - defensive
-            pass
-        # Return a structured error so the caller knows what happened
-        return {
-            "status": "error",
-            "doc_id": doc_id if 'doc_id' in locals() else "unknown",
-            "chunks": len(chunks) if 'chunks' in locals() else 0,
-            "kg_triples": 0,
-            "error": str(e)
-        }
+        return _handle_ingest_failure(e, doc_id, chunks)
 
     finally:
         # Clean up temporary file
         if temp_path and os.path.exists(temp_path):
             os.unlink(temp_path)
+
+
+def _write_temp_pdf(file_content: bytes) -> str:
+    """Write uploaded bytes to a temporary PDF and return its path."""
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(file_content)
+        return tmp.name
+
+
+def _mark_ingest_start(doc_id: str, filename: str) -> None:
+    """Mark the document as being ingested and log the start (best-effort)."""
+    try:
+        pipeline_state_set(doc_id)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("pipeline_state_set failed (non-fatal): %s", e)
+    try:
+        log_worker("ingest", doc_id, "info", f"started ingest of {filename}")
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
+def _prepare_document(temp_path: str, doc_id: str) -> int:
+    """Record page count and set document status to 'processing' (best-effort)."""
+    try:
+        total_pages = pdf_page_count(temp_path)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("Could not read PDF page count (non-fatal): %s", e)
+        total_pages = 0
+    try:
+        update_document_status(doc_id, "processing")
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("update_document_status(processing) failed: %s", e)
+    return total_pages
+
+
+def _enrich_chunks(chunks: list, doc_id: str) -> list:
+    """Contextually enrich each chunk (LLM adds context). Returns enriched list."""
+    doc_anchor = " ".join(chunks[0]["text"].split()[:400]) if chunks else ""
+    enriched_chunks = []
+    for idx, chunk in enumerate(chunks):
+        enriched_text = enrich_chunk(
+            chunk["text"],
+            chunk.get("page", 1),
+            doc_id,
+            idx,
+            doc_anchor=doc_anchor,
+        )
+        enriched_chunks.append({
+            **chunk,
+            "text": enriched_text,          # enriched text
+            "original_text": chunk["text"]  # keep original for cross‑encoder
+        })
+
+    success_count = sum(1 for c in enriched_chunks if c["text"] != c["original_text"])
+    logger.info(f"Contextual enrichment: {success_count}/{len(chunks)} chunks enriched.")
+    return enriched_chunks
+
+
+def _store_chunks(enriched_chunks: list, embeddings: list, doc_id: str) -> None:
+    """Upsert vectors to Qdrant, index in BM25, and signal API reload."""
+    vector_store.upsert(enriched_chunks, embeddings)
+    logger.info(f"Upserted {len(enriched_chunks)} points to Qdrant.")
+
+    bm25_index.remove_by_doc(doc_id)
+    bm25_index.add_chunks(enriched_chunks)
+    logger.info(f"BM25 indexed {len(enriched_chunks)} chunks.")
+
+    _notify_bm25_reload()
+
+
+def _extract_kg(enriched_chunks: list, doc_id: str) -> list:
+    """Run parallel KG extraction and write triples to Neo4j."""
+    kg_result = kg_agent.extract_and_store_node(
+        {"chunks": enriched_chunks, "doc_id": doc_id}
+    )
+    all_triples = kg_result.get("kg_entities", [])
+    logger.info(
+        f"KG extraction complete: {len(all_triples)} triples from "
+        f"{len(enriched_chunks)} chunks, written to Neo4j."
+    )
+    return all_triples
+
+
+def _save_metadata(
+    doc_id: str, filename: str, chunks: list, all_triples: list, total_pages: int
+) -> None:
+    """Persist chunk + document metadata to PostgreSQL (best-effort)."""
+    try:
+        record_chunk_metadata(doc_id, chunks)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("PostgreSQL chunk metadata save failed (non-fatal): %s", e)
+
+    try:
+        record_document(
+            doc_id, filename, len(chunks), len(all_triples),
+            status="ready", total_pages=total_pages,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("PostgreSQL metadata save failed (non-fatal): %s", e)
+
+
+def _finalize_ingest(doc_id: str, chunks: list, all_triples: list) -> None:
+    """Clear the in-flight flag and log completion (best-effort)."""
+    try:
+        pipeline_state_clear(doc_id)
+    except Exception:  # pragma: no cover - defensive
+        pass
+    try:
+        log_worker(
+            "ingest", doc_id, "info",
+            f"completed: {len(chunks)} chunks, {len(all_triples)} triples",
+        )
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
+def _handle_ingest_failure(e: Exception, doc_id: str, chunks: list) -> dict:
+    """Mark failure, clear in-flight flag, log, and return a structured error."""
+    logger.error(f"Ingest pipeline failed: {str(e)}", exc_info=True)
+    try:
+        update_document_status(doc_id, "error")
+    except Exception:  # pragma: no cover - defensive
+        pass
+    try:
+        pipeline_state_clear(doc_id)
+    except Exception:  # pragma: no cover - defensive
+        pass
+    try:
+        log_worker("ingest", doc_id, "error", str(e)[:500])
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return {
+        "status": "error",
+        "doc_id": doc_id,
+        "chunks": len(chunks),
+        "kg_triples": 0,
+        "error": str(e),
+    }
 
 
 def _notify_bm25_reload() -> None:
