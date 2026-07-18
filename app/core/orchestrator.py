@@ -542,7 +542,7 @@ class ARAPOrchestrator:
                 "answer":            str,         final approved answer
                 "sources":           list[dict],  formatted source citations
                 "query_type":        str,          "direct"|"single"|"multi_hop"|"graph"
-                "faithfulness_score": float,       NLI faithfulness (1 - P(contradiction)) mean (0.0-1.0)
+                "faithfulness_score": float,       NLI faithfulness mean (1-P(contradiction)) 0-1
                 "latency_ms":        dict,         per-node timing breakdown
             }
         """

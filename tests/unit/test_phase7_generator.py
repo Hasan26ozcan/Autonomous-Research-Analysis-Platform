@@ -388,7 +388,7 @@ class TestGenerateNode:
 class TestJudgeNode:
 
     def test_passes_when_entailment_above_threshold(self):
-        """Low contradiction (P(c)=0.02 -> faithfulness 0.98 >= 0.90) → judge_passed=True and answer set."""
+        """Low contradiction (P(c)=0.02 -> 0.98 >= 0.90): judge_passed True, answer set."""
         gen = make_generator(nli_scores=[[0.02, 0.95, 0.03]])
         draft = "The model achieved 97% accuracy on the test dataset."
         result = gen.judge(make_state(draft_answer=draft))
@@ -396,7 +396,7 @@ class TestJudgeNode:
         assert result["answer"] == draft
 
     def test_rejects_when_entailment_below_threshold(self):
-        """High contradiction (P(c)=0.50 -> faithfulness 0.50 < 0.90) → judge_passed=False, retry_count incremented."""
+        """High contradiction (P(c)=0.50 -> 0.50 < 0.90): judge_passed False, retry +1."""
         gen = make_generator(nli_scores=[[0.50, 0.40, 0.10]])
         draft = "The model achieved 97% accuracy on the test dataset."
         result = gen.judge(make_state(draft_answer=draft, retry_count=0))
