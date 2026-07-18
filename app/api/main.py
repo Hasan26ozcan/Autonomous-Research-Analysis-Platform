@@ -103,9 +103,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# LIFESPAN — startup / shutdown hooks
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def _bm25_reload_listener() -> None:
     """
@@ -199,9 +196,6 @@ async def lifespan(app: FastAPI):
     logger.info("ARAP shutting down.")
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# FASTAPI APP INSTANCE
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 app = FastAPI(
     title="Adaptive Research & Analysis Platform (ARAP)",
@@ -227,9 +221,6 @@ app.add_middleware(
 )
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Phase 10 — API access logging middleware
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Every request is recorded to api_log (Postgres) with method, path, status
 # and latency. Health/docs/openapi are skipped to avoid log noise. The write
 # is best-effort and never blocks or fails the response.
@@ -260,9 +251,6 @@ async def api_log_middleware(request, call_next):
     return response
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# PYDANTIC SCHEMAS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class IngestResponse(BaseModel):
     task_id: str
@@ -354,9 +342,6 @@ class EvalRequest(BaseModel):
     no_seed: bool = Field(default=False, description="Do not fall back to seeded questions")
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ENDPOINTS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health():
@@ -386,7 +371,7 @@ async def health():
     },
 )
 async def ingest_document(
-    file: Annotated[UploadFile, File()], user_id: str = "default"
+    file: Annotated[UploadFile, File()],
 ):
     """
     Upload a PDF and process it through the full ingestion pipeline **asynchronously**.
@@ -432,7 +417,6 @@ async def ingest_document(
         task = ingest_document_task.delay(
             file_content=contents,
             filename=filename,
-            user_id=user_id,
         )
     except Exception as exc:
         logger.exception("Failed to enqueue ingest task (broker unreachable?): %s", exc)
@@ -570,9 +554,6 @@ async def eval_endpoint(req: EvalRequest):
         ) from e
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Phase 11 — Analytics (JSON endpoints + HTML dashboard)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @app.get("/analytics/summary", tags=["Analytics"])
 async def analytics_summary():
@@ -818,9 +799,6 @@ async def websocket_query(websocket: WebSocket, session_id: str):
         logger.exception("WebSocket fatal error: %s", e)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# UVICORN ENTRY POINT (for local dev without docker)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def main() -> None:
     """Entry point for running the API server directly.

@@ -138,9 +138,6 @@ from app.services.vector_store import vector_store
 logger = logging.getLogger(__name__)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# PROMPTS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 HYDE_SYSTEM_PROMPT = """\
 You are a document retrieval assistant implementing the HyDE technique
@@ -185,9 +182,6 @@ Example:
 """
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# RETRIEVAL AGENT
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class RetrievalAgent:
     """
@@ -249,9 +243,6 @@ class RetrievalAgent:
             logger.info("Cross-encoder loaded in %.0fms", elapsed)
         return self._cross_encoder
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # LangGraph Node: retrieve() — single route
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def retrieve(self, state: AgentState) -> dict:
         """
@@ -336,9 +327,6 @@ class RetrievalAgent:
             },
         }
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # LangGraph Node: retrieve_multi() — multi_hop route
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _retrieve_multi_collect_candidates(
         self,
@@ -492,9 +480,6 @@ class RetrievalAgent:
             },
         }
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Private: Layer 1 — HyDE Query Rewriting
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     @retry(
         stop=stop_after_attempt(2),
@@ -544,9 +529,6 @@ class RetrievalAgent:
             )
             return question   # graceful fallback — retrieval still works
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Private: Multi-hop Question Decomposition
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _decompose_question(self, question: str) -> list[str]:
         """
@@ -594,9 +576,6 @@ class RetrievalAgent:
 
         return [question]   # safe fallback: treat as single-hop
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Private: Layers 2-3 — Hybrid Search + RRF Fusion
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _hybrid_search(
         self,
@@ -721,9 +700,6 @@ class RetrievalAgent:
             for key in sorted_keys
         ]
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Private: Layer 4 — Cross-Encoder Re-ranking
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _rerank(
         self,
@@ -788,9 +764,6 @@ class RetrievalAgent:
 
         return scored_chunks[:top_k]
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Private: Full Pipeline Combinator
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _full_retrieval_pipeline(
         self,
@@ -834,9 +807,6 @@ class RetrievalAgent:
             top_k=top_k,
         )
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Private: Empty State Update Helper
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _empty_update(
         self, state: AgentState, t0: float, node_key: str
@@ -860,9 +830,6 @@ class RetrievalAgent:
         }
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Helpers
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def _avg_rerank_score(chunks: list[dict]) -> float:
     """
@@ -887,9 +854,6 @@ def _avg_rerank_score(chunks: list[dict]) -> float:
     return round(sum(scores) / len(scores), 4)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Module-Level Singleton
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # One agent per process — LLM client and cross-encoder are shared.
 # Registered in orchestrator.py as:

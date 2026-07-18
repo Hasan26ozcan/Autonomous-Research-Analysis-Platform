@@ -129,9 +129,6 @@ from app.services.llm_client import make_llm
 logger = logging.getLogger(__name__)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ROBUST JSON EXTRACTION
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Even in JSON mode, models (especially reasoning models, or providers
 # without strict structured-output support) may wrap the JSON in markdown
 # fences or prepend/append prose. This extracts the FIRST balanced JSON
@@ -180,8 +177,10 @@ def _parse_json_object(raw: str) -> dict:
 
     text = raw.strip()
 
-    # Strip a single markdown code fence (```json ... ``` or ``` ... ```)
-    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, re.DOTALL)
+    # Strip a single markdown code fence (```json ... ``` or ``` ... ```).
+    # Capture lazily (no surrounding \s*) to avoid super-linear backtracking;
+    # surrounding whitespace is handled by the .strip() below.
+    fenced = re.match(r"^```(?:json)?(.*?)```$", text, re.DOTALL)
     if fenced:
         text = fenced.group(1).strip()
 
@@ -195,9 +194,6 @@ def _parse_json_object(raw: str) -> dict:
     return _extract_first_balanced_json(text)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# PROMPTS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 TRIPLE_EXTRACTION_SYSTEM = """\
 You are an information extraction assistant building a knowledge graph.
@@ -291,9 +287,6 @@ LIMIT 20\
 """
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# STRUCTURED OUTPUT MODELS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class Triple(BaseModel):
     """
@@ -324,9 +317,6 @@ class EntityExtractionResult(BaseModel):
     entities: list[str] = Field(default_factory=list)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# CYPHER SAFETY VALIDATION
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # Keywords that indicate a WRITE operation. Case-insensitive match.
 # This is layer 2 of our 3-layer defense (see file header).
@@ -371,9 +361,6 @@ def _validate_cypher(cypher: str) -> tuple[bool, str]:
     return True, "OK"
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# KNOWLEDGE GRAPH AGENT
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class KnowledgeGraphAgent:
     """
@@ -479,9 +466,6 @@ class KnowledgeGraphAgent:
                 raise
         return self._driver
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # LangGraph Node (INGEST GRAPH): extract_and_store_node()
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def extract_and_store_node(self, state: AgentState) -> dict:
         """
@@ -597,9 +581,6 @@ class KnowledgeGraphAgent:
             "kg_entities": [t.model_dump() for t in all_triples],
         }
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # LangGraph Node (QUERY GRAPH): graph_retrieve()
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def graph_retrieve(self, state: AgentState) -> dict:
         """
@@ -675,9 +656,6 @@ class KnowledgeGraphAgent:
             },
         }
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Private: Triple Extraction (Ingestion)
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     @retry(
         stop=stop_after_attempt(2),   # fail fast: with request_timeout=30 and
@@ -772,9 +750,6 @@ class KnowledgeGraphAgent:
             )
             return []
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Private: Neo4j Batch Write
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _batch_upsert_triples(
         self,
@@ -863,9 +838,6 @@ class KnowledgeGraphAgent:
             )
             return 0
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Private: Query-Time Entity Extraction
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _extract_query_entities(self, question: str) -> list[str]:
         """
@@ -903,9 +875,6 @@ class KnowledgeGraphAgent:
             )
             return []
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Private: Cypher Generation
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _generate_cypher(self, question: str, entities: list[str]) -> str:
         """
@@ -948,9 +917,6 @@ class KnowledgeGraphAgent:
             logger.exception("Cypher generation failed: %s", str(e)[:120])
             return ""   # _validate_cypher() will reject empty string
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Private: Cypher Execution
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _execute_cypher(self, cypher: str, doc_id: str | None) -> list[dict]:
         """
@@ -1001,9 +967,6 @@ class KnowledgeGraphAgent:
             )
             return []
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Private: Empty State Update Helper
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _empty_update(self, state: AgentState, t0: float) -> dict:
         """
@@ -1024,9 +987,6 @@ class KnowledgeGraphAgent:
         }
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Module-Level Singleton
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # One agent per process — LLM clients and Neo4j driver are shared.
 # Registered in orchestrator.py as:

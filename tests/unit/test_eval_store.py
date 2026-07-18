@@ -27,9 +27,6 @@ def _patch_pool(module, pool):
     return patch.object(module, "get_pool", return_value=pool)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# start_run
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_start_run_inserts_and_returns_id(eval_store):
     pool = make_pool(script=[FakeRow({"id": 42})])
@@ -58,9 +55,6 @@ def test_start_run_returns_none_when_fetchone_empty(eval_store):
         assert eval_store.start_run(5) is None
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# finish_run
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_finish_run_noop_for_none_run_id(eval_store):
     # Should never touch the pool.
@@ -103,9 +97,6 @@ def test_finish_run_handles_db_error(eval_store):
         eval_store.finish_run(7, status="completed", metrics={"x": 1.0})
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# record_retrieval_results
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_record_retrieval_results_noop_for_none_run_id(eval_store):
     pool = MagicMock()

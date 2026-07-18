@@ -793,14 +793,14 @@ class TestRetrievalAgentExtra:
     def test_retrieve_multi_empty_question(self):
         """retrieve_multi() with no question logs + returns empty update
         (lines 388-389)."""
-        agent, mocks = make_agent_with_mocks()
+        agent, _ = make_agent_with_mocks()
         result = agent.retrieve_multi(make_state(question=""))
         assert result["retrieved_chunks"] == []
 
     def test_retrieve_multi_cache_hit(self, monkeypatch):
         """retrieve_multi() returns cached chunks on a Redis hit
         (lines 394-395)."""
-        agent, mocks = make_agent_with_mocks()
+        agent, _ = make_agent_with_mocks()
         cached = make_chunks(2)
         with patch(
             "app.agents.retrieval_agent.retrieval_cache_get",
@@ -815,7 +815,7 @@ class TestRetrievalAgentExtra:
         a pause before each sub-question after the first (line 425)."""
         from app.core.config import settings
 
-        agent, mocks = make_agent_with_mocks()
+        agent, _ = make_agent_with_mocks()
         monkeypatch.setattr(settings, "llm_call_min_interval_seconds", 0.001)
         agent._decompose_question = MagicMock(
             return_value=["sub question one", "sub question two"]
@@ -838,7 +838,7 @@ class TestRetrievalAgentExtra:
     def test_retrieve_multi_no_candidates(self, monkeypatch):
         """retrieve_multi() with no retrievable candidates after dedup
         logs + returns empty update (lines 446-447)."""
-        agent, mocks = make_agent_with_mocks()
+        agent, _ = make_agent_with_mocks()
         agent._decompose_question = MagicMock(return_value=["only sub question"])
         agent._full_retrieval_pipeline = MagicMock(return_value=[])
 

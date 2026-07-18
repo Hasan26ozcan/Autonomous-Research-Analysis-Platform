@@ -20,9 +20,6 @@ from app.services.llm_client import make_llm
 logger = logging.getLogger(__name__)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# PROMPTS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 CONTEXT_SYSTEM_PROMPT = """\
 You are a document processing assistant specializing in retrieval optimization.
@@ -67,9 +64,6 @@ Chunk to contextualize (from page {page}):
 Write the context description for this chunk:"""
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# MAIN CLASS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class ContextualEnricher:
     """
@@ -120,9 +114,6 @@ class ContextualEnricher:
         )
         self._cache: dict[tuple[str, int], str] = {}
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # LangGraph Node Entry Point
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def enrich(self, state: AgentState) -> dict:
         """
@@ -200,9 +191,6 @@ class ContextualEnricher:
 
         return {"chunks": enriched_chunks}
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Single-Chunk Enrichment
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _enrich_single_chunk(self, chunk: dict, doc_anchor: str) -> dict:
         """
@@ -282,9 +270,6 @@ class ContextualEnricher:
                 "original_text": chunk["text"],
             }
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Public method for single‑chunk enrichment (used by ingest_service)
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def enrich_text(
         self,
@@ -328,9 +313,6 @@ class ContextualEnricher:
         enriched = self._enrich_single_chunk(chunk, doc_anchor)
         return enriched.get("text", chunk_text)
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # LLM Call (isolated for testability)
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _generate_context(
         self,
@@ -395,9 +377,6 @@ class ContextualEnricher:
 
         return response.content.strip()
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Helpers
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     @staticmethod
     def _build_doc_anchor(chunks: list[dict]) -> str:
@@ -487,9 +466,6 @@ class ContextualEnricher:
         return len(self._cache)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Module-Level Singleton and LangGraph Node Function
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # One enricher instance per process — LLM client and cache are shared.
 contextual_enricher = ContextualEnricher()

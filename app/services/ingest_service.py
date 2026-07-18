@@ -20,7 +20,7 @@ from app.services.vector_store import vector_store
 
 
 def run_ingest_pipeline(
-    file_content: bytes, filename: str, user_id: str = "default"
+    file_content: bytes, filename: str
 ) -> dict[str, Any]:
     """
     Full synchronous ingest pipeline – runs inside Celery worker.

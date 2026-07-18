@@ -26,9 +26,6 @@ def _patch_pool(module, pool):
     return patch.object(module, "get_pool", return_value=pool)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# log_api
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_log_api_writes_row(log_store):
     pool = make_pool()
@@ -50,9 +47,6 @@ def test_log_api_noop_when_pool_unavailable(log_store):
         log_store.log_api("GET", "/query", 200, 1.0)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# log_worker
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_log_worker_writes_row(log_store):
     pool = make_pool()
@@ -73,9 +67,6 @@ def test_log_worker_noop_when_pool_unavailable(log_store):
         log_store.log_worker("ingest", "doc1", "info", "x")
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# log_pipeline_batch
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_log_pipeline_batch_writes_one_row_per_node(log_store):
     pool = make_pool()

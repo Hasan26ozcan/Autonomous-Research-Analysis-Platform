@@ -722,11 +722,10 @@ class TestWebSocket:
 
         from app.api.main import app
 
-        async def _failing_stream(*args, **kwargs):
-            raise RuntimeError("Pipeline exploded")
-            yield  # make it an async generator
-
-        with patch("app.api.main.orchestrator.stream_query", side_effect=_failing_stream):
+        with patch(
+            "app.api.main.orchestrator.stream_query",
+            side_effect=RuntimeError("Pipeline exploded"),
+        ):
             with TestClient(app) as client:
                 with client.websocket_connect("/ws/test-session") as ws:
                     ws.send_text(json.dumps({"question": "What is the model?"}))
@@ -940,10 +939,11 @@ class TestEvalEndpoint:
         from fastapi import HTTPException
 
         from app.api.main import EvalRequest, eval_endpoint
+        request = EvalRequest()
         with patch("app.api.main.run_ragas_evaluation",
                    new=AsyncMock(side_effect=RuntimeError("eval died"))):
             with pytest.raises(HTTPException) as exc:
-                await eval_endpoint(EvalRequest())
+                await eval_endpoint(request)
         assert exc.value.status_code == 500
 
 

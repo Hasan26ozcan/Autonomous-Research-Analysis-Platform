@@ -118,10 +118,6 @@ from app.services.vector_store import store_chunks
 logger = logging.getLogger(__name__)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# LANGSMITH — enable at module load time if configured
-# Must happen before any LangChain/LangGraph objects are created.
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 if settings.langchain_tracing_v2 and settings.langchain_api_key:
     os.environ["LANGCHAIN_TRACING_V2"] = "true"
@@ -130,9 +126,6 @@ if settings.langchain_tracing_v2 and settings.langchain_api_key:
     logger.info("LangSmith tracing enabled for project '%s'", settings.langchain_project)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# INGEST GRAPH — helper nodes
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # All ingest pipeline node functions are imported directly from service modules
 # (chunk_document, enrich_chunks, embed_chunks, store_chunks, index_chunks).
@@ -140,9 +133,6 @@ if settings.langchain_tracing_v2 and settings.langchain_api_key:
 #   (state: AgentState) -> dict   (partial state update)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# QUERY GRAPH — helper nodes
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def direct_answer(state: AgentState) -> dict:
     """
@@ -237,9 +227,6 @@ def merge_results(state: AgentState) -> dict | None:
     return None
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ORCHESTRATOR CLASS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class ARAPOrchestrator:
     """
@@ -302,9 +289,6 @@ class ARAPOrchestrator:
                 self._checkpointer = None
         return self._checkpointer
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Graph builders
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def build_ingest_graph(self):
         """
@@ -459,9 +443,6 @@ class ARAPOrchestrator:
             logger.info("Query graph compiled.")
         return self._query_graph
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Public Async API — called by FastAPI endpoints
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     async def ingest(self, pdf_bytes: bytes, filename: str) -> dict:
         """
@@ -747,9 +728,6 @@ class ARAPOrchestrator:
         return status
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Helpers
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def _safe_serialize(state: dict) -> dict:
     """
@@ -775,8 +753,5 @@ def _safe_serialize(state: dict) -> dict:
     }
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Module-Level Singleton
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 orchestrator = ARAPOrchestrator()

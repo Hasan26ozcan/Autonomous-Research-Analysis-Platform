@@ -28,9 +28,6 @@ def _patch_pool(module, pool):
     return patch.object(module, "get_pool", return_value=pool)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# summary
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_summary_returns_aggregates(analytics):
     # Scripted values consumed in order by the 7 _fetchval calls inside summary().
@@ -79,9 +76,6 @@ def test_summary_returns_empty_on_db_error(analytics):
     assert result["total_queries"] == 0
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# top_documents
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_top_documents_returns_rows(analytics):
     rows = [
@@ -121,9 +115,6 @@ def test_top_documents_empty_on_db_error(analytics):
         assert analytics.top_documents() == []
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# eval_trend
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_eval_trend_returns_runs(analytics):
     rows = [
@@ -171,9 +162,6 @@ def test_eval_trend_empty_on_db_error(analytics):
         assert analytics.eval_trend() == []
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# _round (private helper)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_round_helper(analytics):
     assert analytics._round(None) is None

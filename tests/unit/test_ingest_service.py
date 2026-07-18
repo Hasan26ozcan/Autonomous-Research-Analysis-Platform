@@ -87,7 +87,7 @@ def pipeline(monkeypatch):
 
 
 def test_run_ingest_pipeline_success(pipeline):
-    result = pipeline["svc"].run_ingest_pipeline(b"fake pdf", "f.pdf", user_id="u1")
+    result = pipeline["svc"].run_ingest_pipeline(b"fake pdf", "f.pdf")
     assert result["status"] == "success"
     assert result["doc_id"] == "docX"
     assert result["chunks"] == 2

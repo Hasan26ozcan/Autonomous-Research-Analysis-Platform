@@ -25,9 +25,6 @@ def llm_client():
     module.reset_token_usage()
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# token accumulator
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_reset_and_get_token_usage(llm_client):
     llm_client._token_usage["prompt_tokens"] = 12
@@ -40,9 +37,6 @@ def test_reset_and_get_token_usage(llm_client):
     }
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# _record_usage
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_record_usage_from_dict_metadata(llm_client):
     msg = AIMessage(
@@ -80,9 +74,6 @@ def test_record_usage_noop_without_metadata(llm_client):
     assert snap["completion_tokens"] == 0
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# _LLMWrapper.invoke / ainvoke
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_wrapper_invoke_without_cache(llm_client):
     client = MagicMock()
@@ -172,9 +163,6 @@ async def test_wrapper_ainvoke_cache_miss_writes_cache(llm_client):
     assert mock_set.call_args.args[2] == "fresh async"
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# attribute delegation + factory
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def test_wrapper_delegates_unknown_attrs(llm_client):
     client = MagicMock()

@@ -27,16 +27,16 @@ def test_ingest_document_task_runs_pipeline(tasks, monkeypatch):
     fake_result = {"status": "success", "doc_id": "d1", "chunks": 3, "kg_triples": 1}
     monkeypatch.setattr(
         tasks, "run_ingest_pipeline",
-        lambda file_content, filename, user_id="default": fake_result,
+        lambda file_content, filename: fake_result,
     )
     # .run() executes the task body directly (Celery binds `self` internally).
-    result = tasks.ingest_document_task.run(b"pdf-bytes", "f.pdf", "u1")
+    result = tasks.ingest_document_task.run(b"pdf-bytes", "f.pdf")
     assert result == fake_result
 
 
 def test_ingest_document_task_propagates_for_retry(tasks, monkeypatch):
     """On error the task must raise so Celery can retry it."""
-    def _boom(file_content, filename, user_id="default"):
+    def _boom(file_content, filename):
         raise RuntimeError("ingest exploded")
 
     monkeypatch.setattr(tasks, "run_ingest_pipeline", _boom)

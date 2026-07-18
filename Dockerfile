@@ -14,7 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy only the application package. Sensitive files (.env, secrets, local
+# caches) are excluded by .dockerignore, but copying the app directory
+# explicitly avoids ever baking unrelated repo contents into the image.
+COPY app ./app
 
 # The application code is read-only at runtime, but make sure the non-root
 # user can read it.
