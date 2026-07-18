@@ -316,8 +316,6 @@ pytz==2026.2
     # via
     #   mem0ai
     #   neo4j
-pywin32==312
-    # via portalocker
 pyyaml==6.0.3
     # via
     #   datasets
