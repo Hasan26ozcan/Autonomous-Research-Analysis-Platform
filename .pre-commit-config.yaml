@@ -17,7 +17,12 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        # `hf_cache/` holds generated HuggingFace model weights (tracked in
+        # the repo) whose internal files must not be reformatted.
+        exclude: ^hf_cache/
       - id: end-of-file-fixer
+        # Same rationale as above: skip generated model-cache files.
+        exclude: ^hf_cache/
       - id: check-yaml
         args: [--allow-multiple-documents]
         # resolved.yml is a generated GitLab-style pipeline file that uses
