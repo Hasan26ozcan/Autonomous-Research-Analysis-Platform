@@ -1,8 +1,0 @@
-flowchart LR
-    Q["Question"] --> HYDE["1 · HyDE rewriting<br/>(hypothetical answer embed)"]
-    HYDE --> HYBRID["2 · Hybrid search<br/>BM25 (lexical) + dense (Qdrant)"]
-    BM25[(BM25)] --> HYBRID
-    QDRANT[(Qdrant)] --> HYBRID
-    HYBRID --> RRF["3 · RRF fusion<br/>(k=60, dense 0.7 / BM25 0.3)"]
-    RRF --> RERANK["4 · Cross-encoder rerank<br/>(top-k, NLI model)"]
-    RERANK --> OUT["Retrieved chunks<br/>+ rerank_score"]

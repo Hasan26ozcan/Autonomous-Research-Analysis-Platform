@@ -1,22 +1,22 @@
-# ARAP — Mimari Diyagramlar (Architecture)
+# ARAP — Architecture Diagrams
 
-Bu dosya **Adaptive Research & Analysis Platform (ARAP)**'in mimarisini
-Mermaid diyagramları ile açıklar. Diyagramlar `app/core/orchestrator.py`,
-`app/api/main.py` ve `app/agents/*` modüllerindeki gerçek kod topolojisine
-dayanmaktadır. GitHub ve VS Code (Mermaid uzantısı) bu dosyayı doğrudan render eder.
+This file describes the architecture of the **Adaptive Research & Analysis
+Platform (ARAP)** using Mermaid diagrams. The diagrams are based on the actual
+code topology in `app/core/orchestrator.py`, `app/api/main.py`, and
+`app/agents/*`. GitHub and VS Code (Mermaid extension) render this file directly.
 
 ---
 
-## 1. Sistem Genel Bakışı (System Overview)
+## 1. System Overview
 
-Kullanıcı/istemci istekleri FastAPI'ye gelir. `/ingest` zaman alan PDF
-işlemeyi **Celery worker**'a (Redis broker) devreder; `/query` ve `/ws` ise
-her istekte derlenen **QUERY LangGraph**'ını çalıştırır. Tüm kalıcı ve
-geçici durum beş altyapı servisi üzerinde tutulur.
+Client requests arrive at FastAPI. `/ingest` hands the heavy PDF processing off
+to a **Celery worker** (Redis broker); `/query` and `/ws` run the per-request
+**QUERY LangGraph**. All persistent and transient state lives on five
+infrastructure services.
 
 ```mermaid
 flowchart TB
-    Client["İstemci<br/>(Tarayıcı / API client)"]
+    Client["Client<br/>(Browser / API client)"]
 
     subgraph API["FastAPI (app/api/main.py)"]
         EP_INGEST["POST /ingest<br/>(async → task_id)"]
@@ -44,7 +44,7 @@ flowchart TB
     Orch -.->|Redis checkpointer| REDIS
     TASK -.->|BM25 reload signal| REDIS
 
-    subgraph INFRA["Altyapı Servisleri"]
+    subgraph INFRA["Infrastructure Services"]
         QDRANT[(Qdrant<br/>vectors)]
         NEO4J[(Neo4j<br/>knowledge graph)]
         REDIS[(Redis Stack<br/>cache/checkpointer/broker)]
@@ -67,11 +67,12 @@ flowchart TB
 
 ---
 
-## 2. INGEST Grafiği (Belge İşleme — bir kez PDF başına)
+## 2. INGEST Graph (Document Processing — once per PDF)
 
-`app/core/orchestrator.py → build_ingest_graph()`. Doğrusal, dalsız boru
-hattı. **KG çıkarımı sona konur** ki belge Qdrant/BM25 üzerinden hâlâ
-aranabilir olsun (graceful degradation). Checkpointer yoktur (stateless).
+`app/core/orchestrator.py → build_ingest_graph()`. A linear, branchless
+pipeline. **KG extraction runs last** so the document stays searchable via
+Qdrant/BM25 even if extraction is slow (graceful degradation). No checkpointer
+(stateless).
 
 ```mermaid
 flowchart LR
@@ -90,12 +91,13 @@ flowchart LR
 
 ---
 
-## 3. QUERY Grafiği (Sorgu — istek başına, adaptif)
+## 3. QUERY Graph (Query — per request, adaptive)
 
-`app/core/orchestrator.py → build_query_graph()`. İki koşullu kenar vardır:
-(1) `router → get_route()` 4 stratejiye dallanır; (2) `judge → should_retry()`
-retrieve/üretim döngüsü. Tek döngü (retry loop) LangGraph'ın döngü desteğiyle
-sağlanır. Redis checkpointer `session_id` ile çoklu-tur hafızayı korur.
+`app/core/orchestrator.py → build_query_graph()`. Two conditional edges:
+(1) `router → get_route()` branches to 4 strategies; (2) `judge → should_retry()`
+drives the retrieve/generate retry loop. The single cycle (retry loop) relies on
+LangGraph's native cycle support. The Redis checkpointer preserves multi-turn
+memory keyed by `session_id`.
 
 ```mermaid
 flowchart TD
@@ -122,17 +124,17 @@ flowchart TD
     DIRECT -.->|faithfulness_score=1.0| MEMSTORE
 ```
 
-> **Adaptif yönlendirme stratejileri** (`app/agents/router.py`):
-> `direct` (parametrik bilgi, retrieve yok) · `single` (tek hibrit tur) ·
-> `multi_hop` (alt sorulara böl + birleştir) · `graph` (Neo4j Cypher).
-> Hata durumunda `single`'a düşer.
+> **Adaptive routing strategies** (`app/agents/router.py`):
+> `direct` (parametric knowledge, no retrieval) · `single` (one hybrid round) ·
+> `multi_hop` (decompose into sub-questions + merge) · `graph` (Neo4j Cypher).
+> Falls back to `single` on any error.
 
 ---
 
-## 4. Retrieval Stack (4 Katman)
+## 4. Retrieval Stack (4 Layers)
 
-`app/agents/retrieval_agent.py` içinde hem `retrieve` hem `retrieve_multi`
-tarafından kullanılır.
+Implemented in `app/agents/retrieval_agent.py`, used by both `retrieve` and
+`retrieve_multi`.
 
 ```mermaid
 flowchart LR
@@ -145,11 +147,11 @@ flowchart LR
     RERANK --> OUT["Retrieved chunks<br/>+ rerank_score"]
 ```
 
-> Sonuçlar Redis'te `(question, doc_id)` anahtarıyla cache'lenir.
+> Results are cached in Redis keyed by `(question, doc_id)`.
 
 ---
 
-## 5. Servis Katmanı ve Bağımlılıklar
+## 5. Service Layer and Dependencies
 
 ```mermaid
 flowchart TB
@@ -199,9 +201,9 @@ flowchart TB
 
 ---
 
-## 6. Altyapı Servisleri (Docker Compose)
+## 6. Infrastructure Services (Docker Compose)
 
-| Servis | Görüntü | Rol |
+| Service | Image | Role |
 | --- | --- | --- |
 | **API** | `Dockerfile` | FastAPI + Uvicorn (HTTP + WebSocket) |
 | **Worker** | `Dockerfile` | Celery worker (async ingest) |
@@ -225,18 +227,18 @@ flowchart LR
 
 ---
 
-## 7. Akış Özeti (End-to-End)
+## 7. End-to-End Flow
 
 ```mermaid
 sequenceDiagram
-    participant C as İstemci
+    participant C as Client
     participant API as FastAPI
     participant O as Orchestrator
     participant G as QUERY Graph
     participant R as Redis
     participant DB as PostgreSQL
 
-    C->>API: POST /query veya WS /ws
+    C->>API: POST /query or WS /ws
     API->>O: query() / stream_query()
     O->>G: invoke(state, thread_id=session_id)
     G->>G: router → retrieve → generate → judge
@@ -246,5 +248,5 @@ sequenceDiagram
     O-->>API: result
     API-->>C: JSON / stream events
 
-    Note over C,DB: /ingest ayrı yolda: API → Redis broker → Celery worker → INGEST Graph → Qdrant/Neo4j/PG
+    Note over C,DB: /ingest uses a separate path: API → Redis broker → Celery worker → INGEST Graph → Qdrant/Neo4j/PG
 ```
