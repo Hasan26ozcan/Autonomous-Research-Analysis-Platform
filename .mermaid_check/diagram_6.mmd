@@ -1,0 +1,10 @@
+flowchart LR
+    subgraph DOCKER["docker-compose"]
+        API_SVC["api"] -->|broker| REDIS_SVC[(redis-stack)]
+        WORKER_SVC["worker"] -->|broker| REDIS_SVC
+        API_SVC --> QDRANT_SVC[(qdrant)]
+        WORKER_SVC --> QDRANT_SVC
+        WORKER_SVC --> NEO4J_SVC[(neo4j)]
+        API_SVC --> PG_SVC[(postgresql)]
+        WORKER_SVC --> PG_SVC
+    end

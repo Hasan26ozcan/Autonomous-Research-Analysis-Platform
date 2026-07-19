@@ -1,0 +1,22 @@
+flowchart TD
+    START(["START"]) --> ROUTER["router<br/>(Phase 4 · classify + Mem0 fetch)"]
+
+    ROUTER -->|get_route: direct| DIRECT["direct_answer<br/>(no retrieval)"]
+    ROUTER -->|get_route: single| RETRIEVE["retrieve<br/>(HyDE+hybrid+rerank)"]
+    ROUTER -->|get_route: multi_hop| RMULTI["retrieve_multi<br/>(decompose+multi)"]
+    ROUTER -->|get_route: graph| GRAPH["graph_retrieve<br/>(Neo4j Cypher)"]
+
+    RETRIEVE --> MERGE["merge_results<br/>(convergence)"]
+    RMULTI --> MERGE
+    GRAPH --> MERGE
+    DIRECT --> MEMSTORE
+
+    MERGE --> GEN["generate<br/>(Phase 7 · GPT-4o + sources)"]
+    GEN --> JUDGE["judge<br/>(Phase 7 · NLI faithfulness)"]
+
+    JUDGE -->|should_retry: generate| GEN
+    JUDGE -->|should_retry: memory_store| MEMSTORE["memory_store<br/>(Mem0 persist)"]
+
+    MEMSTORE --> END(["END"])
+
+    DIRECT -.->|faithfulness_score=1.0| MEMSTORE

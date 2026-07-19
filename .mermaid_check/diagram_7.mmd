@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant C as İstemci
+    participant API as FastAPI
+    participant O as Orchestrator
+    participant G as QUERY Graph
+    participant R as Redis
+    participant DB as PostgreSQL
+
+    C->>API: POST /query veya WS /ws
+    API->>O: query() / stream_query()
+    O->>G: invoke(state, thread_id=session_id)
+    G->>G: router → retrieve → generate → judge
+    G-->>R: checkpoint (session state)
+    G-->>O: answer + sources + faithfulness_score
+    O->>DB: record_query() (best-effort)
+    O-->>API: result
+    API-->>C: JSON / stream events
+
+    Note over C,DB: /ingest ayrı yolda: API → Redis broker → Celery worker → INGEST Graph → Qdrant/Neo4j/PG

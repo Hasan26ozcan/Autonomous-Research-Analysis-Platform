@@ -294,7 +294,9 @@ endpoint the app already uses — so **no separate Mem0 server or account is req
 - **PostgreSQL logging** — `api_log`, `worker_log`, `pipeline_log` (per-node latency),
   `query_history` (also an auto RAGAS test set), `conversations`, and `memories`.
 - **Analytics dashboard** — `GET /analytics` renders a self-contained HTML page with summary
-  stats, top documents, and evaluation trends (`app/services/analytics.py`).
+  stats, top documents, and evaluation trends (`app/services/analytics.py`). It is backed by three
+  JSON endpoints — `/analytics/summary`, `/analytics/documents`, `/analytics/eval-trend` — that the
+  page fetches on load.
 - **RAGAS evaluation** — `POST /eval` (or `python -m evaluation.ragas_eval`) runs the live
   pipeline over real or seed questions and persists faithfulness / answer-relevancy /
   context-precision / context-recall to PostgreSQL.
@@ -320,7 +322,7 @@ ARAP/
 │   ├── __init__.py
 │   ├── api/
 │   │   ├── __init__.py
-│   │   └── main.py                      # FastAPI app: /health, /ingest, /query, /ws, /eval, /analytics
+│   │   └── main.py                      # FastAPI app: /health, /ingest, /query, /ws, /eval, /analytics (+ /analytics/* JSON)
 │   ├── agents/
 │   │   ├── __init__.py
 │   │   ├── router.py                    # Adaptive router + Mem0 fetch (Phase 4)
@@ -487,7 +489,10 @@ differs. The most important ones:
 | `POST` | `/query` | Synchronous adaptive Q&A. Returns `answer`, `sources`, `query_type`, `faithfulness_score`, `latency_ms`. |
 | `WS` | `/ws/{session_id}` | Streaming Q&A — one event per LangGraph node, then a final `done` message. |
 | `POST` | `/eval` | Run the RAGAS evaluation suite and persist results to PostgreSQL. |
-| `GET` | `/analytics` | Built-in HTML analytics dashboard. |
+| `GET` | `/analytics` | Built-in HTML analytics dashboard (fetches the three JSON endpoints below). |
+| `GET` | `/analytics/summary` | Headline metrics: total queries, documents, eval runs, avg latency / faithfulness / precision / recall. |
+| `GET` | `/analytics/documents` | Top documents by query volume with average faithfulness. |
+| `GET` | `/analytics/eval-trend` | Recent evaluation runs with headline metrics. |
 | `GET` | `/docs` | Auto-generated OpenAPI/Swagger docs. |
 
 **Example `/query` response**
@@ -497,7 +502,7 @@ differs. The most important ones:
   "answer": "The proposed method achieves state-of-the-art results [Source 1]…",
   "sources": [
     { "index": 1, "text": "…", "page": 7, "filename": "paper.pdf",
-      "doc_id": "a3f8b12c", "chunk_index": 23, "rerank_score": 0.91 }
+      "doc_id": "a3f8b12c", "chunk_index": 23, "rerank_score": -7.01 }
   ],
   "query_type": "single",
   "faithfulness_score": 0.92,
