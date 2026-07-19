@@ -59,11 +59,16 @@ jobs:
           path: htmlcov/
 
       - name: Upload coverage to Codecov
-        # Public repo: no token required. For a private repo, add a
-        # CODECOV_TOKEN secret in Settings -> Secrets and reference it here.
+        # CODECOV_TOKEN is a repository secret holding the Codecov upload
+        # token (Settings -> Secrets and variables -> Actions). It is NOT
+        # hardcoded here. Generated per-repo on the Codecov setup page.
         uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
+          # Tags this upload as the unit-test suite; matches the `unittests`
+          # flag declared in codecov.yml (carryforward enabled there).
+          flags: unittests
           fail_ci_if_error: false
 
   lint:

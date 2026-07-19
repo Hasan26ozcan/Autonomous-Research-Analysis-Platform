@@ -1,24 +1,73 @@
 # Codecov configuration.
 # Docs: https://docs.codecov.com/docs/codecov-yaml
 #
-# This makes Codecov post a comment on every PR reporting how the change
-# moved coverage ("this PR changes coverage by +X% / -X%"), and shows a
-# project + patch status check. The status checks are informational only;
-# they are NOT required by branch protection, so a small drop never blocks
-# a merge.
+# Three features are wired up here:
+#   * Patch coverage  - how well the CHANGED lines in a PR are covered
+#                       (informational only; restricted to pull requests).
+#   * Components       - the app/ subpackages are grouped so each gets its
+#                       own project + patch status and a PR-comment breakdown.
+#   * Flags            - the unit-test upload is tagged `unittests` with
+#                       carryforward, so future split suites merge correctly.
+#
+# Every status check is INFORMATIONAL only (not required by branch
+# protection), so a coverage drop never blocks a merge.
 
 coverage:
   status:
+    # Overall repository coverage across every component.
     project:
       default:
         target: auto
         threshold: 1% # allow a <=1% change without flagging the status
+    # Coverage of the changed lines. Only meaningful on PRs (a push to main
+    # has no diff against a base branch), so restrict it to pull requests.
     patch:
       default:
+        only_pulls: true
         target: auto
         threshold: 1%
 
+# Distinguishes uploaded reports. `unittests` is the only active suite today
+# (CI runs tests/unit). carryforward keeps its coverage intact across commits
+# where other suites do not run, so merged reporting stays correct once more
+# flags are added.
+flags:
+  unittests:
+    carryforward: true
+
+# Groups source files into logical components that mirror the app/ layout.
+# Each component inherits project + patch statuses from default_rules, all
+# informational (target: auto, 1% slack), and appears in the PR comment.
+component_management:
+  default_rules:
+    statuses:
+      - type: project
+        target: auto
+        threshold: 1%
+      - type: patch
+        target: auto
+        threshold: 1%
+        only_pulls: true
+  individual_components:
+    - component_id: agents
+      name: Agents
+      paths:
+        - "app/agents/**"
+    - component_id: api
+      name: API
+      paths:
+        - "app/api/**"
+    - component_id: core
+      name: Core
+      paths:
+        - "app/core/**"
+    - component_id: services
+      name: Services
+      paths:
+        - "app/services/**"
+
 comment:
-  layout: "reach, diff, flags, files"
+  # `components` surfaces the per-component breakdown in the PR comment.
+  layout: "reach, diff, flags, components, files"
   behavior: default
   require_changes: false
