@@ -1,5 +1,9 @@
 # ARAP — Architecture Diagrams
 
+> This is the **full, diagram-driven** companion to the concise Architecture
+> section in [`README.md`](README.md). Start there for a one-page overview; the
+> Mermaid diagrams below go deeper into every graph and data flow.
+
 This file describes the architecture of the **Adaptive Research & Analysis
 Platform (ARAP)** using Mermaid diagrams. The diagrams are based on the actual
 code topology in `app/core/orchestrator.py`, `app/api/main.py`, and

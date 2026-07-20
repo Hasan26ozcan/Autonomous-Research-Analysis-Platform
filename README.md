@@ -22,16 +22,7 @@
 - [Example: a real end-to-end query](#example-a-real-end-to-end-query)
 - [Key features](#key-features)
 - [Architecture](#architecture)
-  - [System overview](#system-overview)
   - [The two LangGraph graphs](#the-two-langgraph-graphs)
-  - [Adaptive routing (4 strategies)](#adaptive-routing-4-strategies)
-  - [The retrieval stack (4 layers)](#the-retrieval-stack-4-layers)
-  - [Contextual enrichment](#contextual-enrichment)
-  - [Knowledge graph (Neo4j)](#knowledge-graph-neo4j)
-  - [Faithfulness judging & retry loop](#faithfulness-judging--retry-loop)
-  - [Long-term memory (Mem0)](#long-term-memory-mem0)
-  - [Caching, rate limiting & resilience](#caching-rate-limiting--resilience)
-  - [Observability & evaluation](#observability--evaluation)
   - [Infrastructure services](#infrastructure-services)
 - [Project structure](#project-structure)
 - [Quickstart](#quickstart)
@@ -139,178 +130,102 @@ citations, the faithfulness judge, and structured latency logging.
 
 ## Architecture
 
-### System overview
+ARAP is a **multi-agent, retrieval-augmented generation (RAG)** platform built from two compiled
+**LangGraph** graphs and served over **FastAPI**. At a glance, every request flows through the
+same shape:
 
 ```
-                         ┌─────────────────────────────────────────────────────────┐
-        PDF upload ─────▶│  FastAPI (app/api/main.py)                              │
-                         │   • /ingest  → Celery task (async)                       │
-        question  ─────▶│   • /query   → ARAPOrchestrator.query()                  │
-                         │   • /ws/{sid} → ARAPOrchestrator.stream_query()         │
-                         └───────────────┬───────────────────────┬────────────────┘
-                                         │                        │
-                            ┌────────────▼─────────┐   ┌──────────▼───────────┐
-                            │  Celery worker        │   │  LangGraph QUERY graph │
-                            │  (ingest pipeline)    │   │  (per-request)          │
-                            └────────────┬─────────┘   └──────────┬───────────┘
-                                         │                        │
-        ┌────────────────────────────────┼────────────────────────┼───────────────────┐
-        │  Qdrant (vectors)   Neo4j (KG)   Redis (cache+checkpointer+broker)   PostgreSQL  │
-        └────────────────────────────────────────────────────────────────────────────────┘
+   PDF upload / question
+            │
+            ▼
+   FastAPI  (app/api/main.py)
+     ├─ /ingest  ──▶  Celery worker  ──▶  INGEST graph
+     │                 (async, once per PDF)    chunk → enrich → embed
+     │                                              → store → index → KG
+     └─ /query, /ws  ──▶  QUERY graph  (per request)
+                          router → retrieve → generate → judge
+            │
+            ▼
+   Infrastructure:  Qdrant · Neo4j · Redis · PostgreSQL · (Mem0)
 ```
 
 ### The two LangGraph graphs
 
-ARAP compiles **two** LangGraph state graphs (`app/core/orchestrator.py`). Both are built once
-and cached; the query graph is compiled with a **Redis checkpointer** keyed by `session_id` so
-multi-turn conversations persist automatically.
+`app/core/orchestrator.py` compiles and caches two state graphs — this is the spine of the whole
+system:
 
-**INGEST graph** — runs once per PDF (in the Celery worker):
+- **INGEST graph** — runs **once per PDF**, off the request path, inside a Celery worker. A
+  linear, branchless pipeline (`chunk → enrich → embed → store → index → extract KG`) so heavy
+  documents never block the API. KG extraction runs last, so a document stays searchable even if
+  graph extraction is slow.
+- **QUERY graph** — runs **per request**, adapting to the question. The `router` node classifies
+  the question into one of four strategies (`direct` / `single` / `multi_hop` / `graph`), retrieval
+  runs a 4-layer hybrid stack, then `generate` writes a cited answer that a local NLI judge scores —
+  retrying once if it detects hallucination. A Redis checkpointer keyed by `session_id` keeps
+  multi-turn context.
 
-```
-chunk_document ─▶ enrich_chunks ─▶ embed_chunks ─▶ store_chunks ─▶ index_chunks ─▶ extract_and_store_node ─▶ END
-   (Phase 2)        (Phase 3)       (Phase 2)       (Phase 2)      (Phase 2)         (Phase 6: Neo4j triples)
-```
-
-**QUERY graph** — runs per request, with an adaptive branch and a retry cycle:
-
-```
-                 ┌──────────────────────────────────────────────────┐
-   router ───────▶│ Phase 4: classify + fetch Mem0 memories          │
-       │          └──────────────────────────────────────────────────┘
-       │ get_route() conditional edge:
-       ├─ "direct"    ─▶ direct_answer ─────────────────┐
-       ├─ "single"    ─▶ retrieve (HyDE+hybrid+rerank)  │
-       ├─ "multi_hop" ─▶ retrieve_multi (decompose+multi)│
-       └─ "graph"     ─▶ graph_retrieve (Neo4j Cypher)   │
-       │                 └─────────▶ merge_results (convergence) ─▶ generate ─▶ judge ─┐
-       │                                                                                │
-       │                                          should_retry() conditional edge:     │
-       │                                            "generate"     ──▶ generate (retry) │
-       │                                            "memory_store" ──▶ memory_store ──▶ END
-```
-
-Every node is a plain function `(AgentState) -> dict` (or `None` for side-effect-only nodes) that
-returns only the state fields it changed. The shared `AgentState` schema is defined in
+Every node is a plain `(AgentState) → dict` function; the shared schema lives in
 `app/core/state.py`.
 
-### Adaptive routing (4 strategies)
+<details>
+<summary>How the pieces fit — routing, retrieval, knowledge graph, memory & resilience</summary>
 
-`app/agents/router.py` classifies each question *before* any retrieval (Jeong et al., 2024,
-*Adaptive RAG*, arXiv:2403.14403) and fetches the user's long-term Mem0 memories in the same node:
+**Adaptive routing (4 strategies).** `app/agents/router.py` classifies each question *before*
+retrieval and fetches the user's Mem0 memories in the same step:
 
-| Strategy | When | Next step |
+| Strategy | Used when | Next step |
 | --- | --- | --- |
-| `direct` | General knowledge the LLM already knows (e.g. "What is cosine similarity?") | `direct_answer` — no retrieval, saves ~800 ms. |
-| `single` | One chunk answers it (e.g. "What revenue was reported in Q3 2024?") | `retrieve` — one hybrid round. |
-| `multi_hop` | Needs reasoning across sections (e.g. "How does section 3 address section 7's limitations?") | `retrieve_multi` — decompose → retrieve per sub-question → merge → rerank. |
-| `graph` | Structural relationships between named entities (e.g. "Which authors co-appear in papers cited by both chapter 2 and 5?") | `graph_retrieve` — Neo4j Cypher. |
+| `direct` | General knowledge the LLM already knows | answer directly, no retrieval (~800 ms saved) |
+| `single` | One chunk answers it | one hybrid retrieval round |
+| `multi_hop` | Reasoning across sections | decompose → retrieve per sub-question → merge |
+| `graph` | Relationships between named entities | read-only Neo4j Cypher |
 
-The classifier is cheap (`router_model`, ~$0.0001) and falls back to `single` on any error.
+It falls back to `single` on any error.
 
-### The retrieval stack (4 layers)
+**The retrieval stack (4 layers).** `app/agents/retrieval_agent.py`:
+(1) **HyDE** rewrites the question as a hypothetical answer and embeds that;
+(2) **hybrid search** — BM25 (lexical) + dense vectors (Qdrant);
+(3) **RRF fusion** (`k=60`, dense `0.7` / BM25 `0.3`);
+(4) **cross-encoder rerank** (`nli-deberta-v3-small`) returns the top-`k`.
+Results are cached in Redis by `(question, doc_id)`.
 
-`app/agents/retrieval_agent.py` implements a four-layer pipeline (used by both `retrieve` and
-`retrieve_multi`):
+**Contextual enrichment.** Before embedding, an LLM prepends a 2–3 sentence context to each chunk
+(Anthropic's *Contextual Retrieval*); the original text is kept for display and scoring.
 
-1. **HyDE rewriting** — generate a hypothetical answer passage and embed *that* instead of the
-   question, closing the question/doc vocabulary gap (Gao et al., 2022, arXiv:2212.10496).
-2. **Hybrid search** — BM25 (`rank_bm25`) catches exact terms/codes/names; dense vectors
-   (`sentence-transformers` → Qdrant HNSW) catch paraphrase/semantics.
-3. **RRF fusion** — Reciprocal Rank Fusion (`score = Σ weight · 1/(k + rank)`, `k=60`,
-   dense `0.7` / BM25 `0.3`) merges the two ranked lists by *rank*, ignoring incompatible raw
-   scores (Cormack et al., SIGIR 2009).
-4. **Cross-encoder reranking** — `cross-encoder/ms-marco-MiniLM-L-6-v2` scores each
-   (question, chunk) pair with full attention and returns the top-`k` (CPU, ~80 ms / 10 pairs).
+**Knowledge graph (Neo4j).** `app/agents/graph_agent.py` extracts `(head, relation, tail)` triples
+during ingest and generates **read-only** Cypher at query time, guarded by a 3-layer safety check
+(prompt + `_validate_cypher()` + `execute_read()`).
 
-Retrieval results are cached in Redis keyed by `(question, doc_id)`.
+**Faithfulness judge & retry.** A local NLI model scores each answer sentence
+(`1 − P(contradiction)`); below `FAITHFULNESS_THRESHOLD` (0.90) the graph loops back to `generate`
+once, then finalizes the best answer. No API cost, no infinite loop.
 
-### Contextual enrichment
+**Long-term memory (Mem0).** Personalizes answers from the same Qdrant instance and LLM endpoint —
+self-hosted by default, no extra server needed.
 
-`app/services/contextual_enricher.py` implements Anthropic's *Contextual Retrieval*: before
-embedding, an LLM prepends a 2–3 sentence context description to each chunk
-(`[Context: ...]\n\n<original text>`). The enriched text is what gets **embedded** and **stored**,
-while the original text is preserved (`original_text`) for display and NLI scoring. Enrichment
-degrades gracefully — a failed chunk keeps its original text.
+**Resilience.** Redis serves as checkpointer + broker + cache (all best-effort). A proactive
+sliding-window rate limiter paces LLM calls. Mem0, Neo4j, NLI, BM25, and PostgreSQL are all
+optional — a failure degrades the answer, never crashes the request. Ingest is idempotent
+(`doc_id` = SHA-256 of the PDF bytes).
 
-### Knowledge graph (Neo4j)
+**Observability.** LangSmith tracing (opt-in), PostgreSQL per-node/pipeline logging, a built-in
+HTML `/analytics` dashboard, and RAGAS evaluation persisted to PostgreSQL.
 
-`app/agents/graph_agent.py` has two responsibilities:
+</details>
 
-- **Ingestion (`extract_and_store_node`)** — extracts `(head, relation, tail, confidence)` triples
-  from every chunk in parallel (`ThreadPoolExecutor`, 5 workers) and writes them to Neo4j in a
-  single idempotent `UNWIND … MERGE` batch. Runs *last* in the ingest graph so the document is
-  already searchable via Qdrant/BM25 even if KG extraction is slow or partially fails.
-- **Query (`graph_retrieve`)** — extracts entities from the question, generates a **read-only**
-  Cypher query, validates it, and executes it in a Neo4j read transaction.
-
-**Cypher safety (3 layers):** (1) prompt forbids write keywords; (2) `_validate_cypher()` rejects
-any query containing `CREATE/MERGE/DELETE/SET/…`, missing `LIMIT`, or missing `MATCH`;
-(3) `session.execute_read()` enforces read-only at the driver level.
-
-### Faithfulness judging & retry loop
-
-`app/agents/generator.py` owns generation, judging, and memory storage:
-
-- **generate()** — assembles a context window from retrieved chunks + KG paths + Mem0 memories,
-  calls `llm_model` (GPT-4o by default) with a strict grounding prompt that requires `[Source N]`
-  citations. Uses a stricter prompt on retry attempts.
-- **judge()** — splits the draft into sentences and scores each against the concatenated context
-  with a local NLI model (`cross-encoder/nli-deberta-v3-small`). Per-sentence faithfulness
-  = `1 - P(contradiction)`; `faithfulness_score` = mean across sentences. A grounded answer
-  therefore scores ~0.92-0.99, so `faithfulness_threshold` (0.90) passes good answers while
-  rejecting hallucinations. If below the threshold (or any single sentence has P(contradiction) above
-  `faithfulness_contradiction_gate`) and retries remain, the graph loops back to `generate`;
-  otherwise the answer is finalized (best available, never an infinite loop).
-- **store_memory()** — persists the approved Q&A turn to Mem0 for future personalization.
-
-Using a local NLI model instead of LLM-as-judge avoids API cost and ~2–3 s latency per answer.
-
-### Long-term memory (Mem0)
-
-The router and generator use Mem0 to personalize answers. By default it runs in **embedded
-( self-hosted)** mode: it points at the *same* Qdrant instance (separate `arap_memories` collection)
-and the *same* local `sentence-transformers` model, and calls whatever OpenAI-compatible LLM
-endpoint the app already uses — so **no separate Mem0 server or account is required**. Set
-`MEM0_API_KEY` to use the hosted Mem0 Platform instead. Memory failures are non-fatal.
-
-### Caching, rate limiting & resilience
-
-- **Redis** plays five roles: LangGraph session checkpointer, Celery broker, retrieval-result
-  cache, LLM-response cache, and a transient "ingest in flight" flag (`app/services/redis_cache.py`).
-  All cache calls are best-effort — if Redis is down, the app falls back to the uncached path.
-- **Proactive rate limiter** (`app/services/rate_limiter.py`) — a thread-safe sliding-window
-  limiter paces LLM calls to stay under the provider's RPM/TPM budget (tuned for Groq's free tier)
-  *before* sending, avoiding most 429s. The OpenAI SDK adds reactive retries on the rest.
-- **Graceful degradation everywhere** — Mem0, Neo4j KG, NLI, BM25, and PostgreSQL are all
-  optional; a failure in any one degrades the answer rather than crashing the request.
-- **Idempotent ingest** — `doc_id` is the SHA-256 of the PDF bytes (first 16 hex chars), so
-  re-uploading the same file upserts rather than duplicating.
-
-### Observability & evaluation
-
-- **LangSmith** tracing is enabled automatically when `LANGCHAIN_TRACING_V2=true` — every node
-  appears as a named span with input/output, token counts, and latency.
-- **PostgreSQL logging** — `api_log`, `worker_log`, `pipeline_log` (per-node latency),
-  `query_history` (also an auto RAGAS test set), `conversations`, and `memories`.
-- **Analytics dashboard** — `GET /analytics` renders a self-contained HTML page with summary
-  stats, top documents, and evaluation trends (`app/services/analytics.py`). It is backed by three
-  JSON endpoints — `/analytics/summary`, `/analytics/documents`, `/analytics/eval-trend` — that the
-  page fetches on load.
-- **RAGAS evaluation** — `POST /eval` (or `python -m evaluation.ragas_eval`) runs the live
-  pipeline over real or seed questions and persists faithfulness / answer-relevancy /
-  context-precision / context-recall to PostgreSQL.
+> 📊 For a fully diagram-driven walkthrough — system overview, both graphs, the retrieval stack,
+> service dependencies, the Docker layout, and an end-to-end sequence — open
+> **[`architecture.md`](architecture.md)**.
 
 ### Infrastructure services
 
 | Service | Image | Role |
 | --- | --- | --- |
-| **Qdrant** | `qdrant/qdrant:v1.12.0` | Dense vector store (`arap_docs` collection, cosine, HNSW). |
+| **Qdrant** | `qdrant/qdrant:v1.12.0` | Dense vector store (`arap_docs` collection). |
 | **Neo4j** | `neo4j:5.25-community` | Knowledge graph (triples, Cypher traversal). |
-| **Redis Stack** | `redis/redis-stack:latest` | Checkpointer + Celery broker + caches (RediSearch module). |
-| **PostgreSQL** | `postgres:16-alpine` | Metadata, query/conversation history, eval results, logs. |
-| **API** | built from `Dockerfile` | FastAPI + Uvicorn. |
-| **Worker** | built from `Dockerfile` | Celery worker for async ingestion. |
+| **Redis Stack** | `redis/redis-stack:latest` | Checkpointer + Celery broker + caches. |
+| **PostgreSQL** | `postgres:16-alpine` | Metadata, history, eval results, logs. |
+| **API / Worker** | built from `Dockerfile` | FastAPI+Uvicorn, and the Celery ingest worker. |
 
 ---
 
