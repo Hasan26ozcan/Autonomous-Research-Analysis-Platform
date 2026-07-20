@@ -22,6 +22,7 @@
 - [Example: a real end-to-end query](#example-a-real-end-to-end-query)
 - [Key features](#key-features)
 - [Architecture](#architecture)
+  - [General Architecture](#general-architecture)
   - [The two LangGraph graphs](#the-two-langgraph-graphs)
   - [Infrastructure services](#infrastructure-services)
 - [Project structure](#project-structure)
@@ -131,23 +132,64 @@ citations, the faithfulness judge, and structured latency logging.
 ## Architecture
 
 ARAP is a **multi-agent, retrieval-augmented generation (RAG)** platform built from two compiled
-**LangGraph** graphs and served over **FastAPI**. At a glance, every request flows through the
-same shape:
+**LangGraph** graphs and served over **FastAPI**. The big picture:
 
+```mermaid
+flowchart TB
+    Client["Client<br/>(Browser / API client)"]
+
+    subgraph API["FastAPI (app/api/main.py)"]
+        EP_INGEST["POST /ingest<br/>(async → task_id)"]
+        EP_QUERY["POST /query<br/>(sync)"]
+        EP_WS["WS /ws/{session_id}<br/>(stream)"]
+        EP_EVAL["POST /eval"]
+        EP_ANALYTICS["GET /analytics/*"]
+        Orch["ARAPOrchestrator<br/>(app/core/orchestrator.py)"]
+        EP_INGEST --> Orch
+        EP_QUERY --> Orch
+        EP_WS --> Orch
+    end
+
+    subgraph WORKER["Celery Worker (Docker)"]
+        TASK["ingest_document_task<br/>(app/services/tasks.py)"]
+        INGEST_G["INGEST LangGraph<br/>(chunk→enrich→embed→store→index→KG)"]
+        TASK --> INGEST_G
+    end
+
+    Client -->|PDF / question| Orch
+    EP_INGEST -.->|enqueue| BROKER[(Redis broker)]
+    BROKER -.->|consume| TASK
+
+    Orch -->|compile & run| QUERY_G["QUERY LangGraph<br/>(router→retrieve→generate→judge)"]
+    Orch -.->|Redis checkpointer| REDIS
+    TASK -.->|BM25 reload signal| REDIS
+
+    subgraph INFRA["Infrastructure Services"]
+        QDRANT[(Qdrant<br/>vectors)]
+        NEO4J[(Neo4j<br/>knowledge graph)]
+        REDIS[(Redis Stack<br/>cache/checkpointer/broker)]
+        PG[(PostgreSQL<br/>metadata/logs/eval)]
+        MEM0[(Mem0<br/>long-term memory)]
+    end
+
+    INGEST_G --> QDRANT
+    INGEST_G --> NEO4J
+    QUERY_G --> QDRANT
+    QUERY_G --> NEO4J
+    QUERY_G --> MEM0
+    EP_EVAL --> PG
+    EP_ANALYTICS --> PG
+    TASK --> PG
+    Orch -.->|health check| QDRANT
+    Orch -.->|health check| NEO4J
+    Orch -.->|health check| REDIS
 ```
-   PDF upload / question
-            │
-            ▼
-   FastAPI  (app/api/main.py)
-     ├─ /ingest  ──▶  Celery worker  ──▶  INGEST graph
-     │                 (async, once per PDF)    chunk → enrich → embed
-     │                                              → store → index → KG
-     └─ /query, /ws  ──▶  QUERY graph  (per request)
-                          router → retrieve → generate → judge
-            │
-            ▼
-   Infrastructure:  Qdrant · Neo4j · Redis · PostgreSQL · (Mem0)
-```
+
+### General Architecture
+
+The diagram above is the 10,000-foot view. For the **full** architecture — both LangGraph graphs
+(INGEST & QUERY in detail), the 4-layer retrieval stack, service dependencies, the Docker layout,
+and an end-to-end sequence — open **[`architecture.md`](architecture.md)**.
 
 ### The two LangGraph graphs
 
