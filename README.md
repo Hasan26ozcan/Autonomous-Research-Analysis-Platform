@@ -19,12 +19,12 @@
 ## Table of Contents
 
 - [What ARAP does](#what-arap-does)
-- [Example: a real end-to-end query](#example-a-real-end-to-end-query)
-- [Key features](#key-features)
 - [Architecture](#architecture)
   - [General Architecture](#general-architecture)
   - [The two LangGraph graphs](#the-two-langgraph-graphs)
   - [Infrastructure services](#infrastructure-services)
+- [Example: a real end-to-end query](#example-a-real-end-to-end-query)
+- [Key features](#key-features)
 - [Project structure](#project-structure)
 - [Quickstart](#quickstart)
   - [Option A — Docker Compose (recommended)](#option-a--docker-compose-recommended)
@@ -61,71 +61,6 @@ The pipeline can:
 - personalize answers with Mem0 long-term memory;
 - stream progress and final results over WebSocket;
 - log every request, pipeline node, and query to PostgreSQL for analytics and offline evaluation.
-
----
-
-## Example: a real end-to-end query
-
-To show what ARAP actually produces (not a hand-written sample), here is a **real**
-response from the pipeline. A research PDF — *"The LLM Fallacy: Misattribution in
-AI-Assisted Cognitive Workflows"* by Hyunwoo Kim — was ingested, then asked a single
-question. Everything below is the platform's own output, lightly formatted.
-
-> **Question:** "What is the topic of this article?"
-
-**Answer**
-
-> The topic of this article is the **LLM Fallacy**, which refers to a cognitive
-> attribution error where individuals misinterpret outputs generated with the assistance
-> of Large Language Models (LLMs) as evidence of their own independent competence,
-> leading to a systematic divergence between perceived and actual capability.
-
-**Sources** — retrieved, reranked, and cited by the generator:
-
-| # | Page | Chunk | Rerank score | Snippet |
-| --- | --- | --- | --- | --- |
-| 1 | 5 | 5 | −7.0052 | "…cognitive attribution errors in AI-assisted workflows…" |
-| 2 | 6 | 6 | −7.4964 | "…manifestations across cognitive tasks…" |
-| 3 | 10 | 12 | −7.6813 | "…misattribution of LLM-assisted outputs as evidence of human competence…" |
-| 4 | 11 | 13 | −7.9684 | "…Guidelines…" |
-| 5 | 1 | 0 | −8.0122 | "The LLM Fallacy:…" |
-
-**Pipeline metrics** (per stage, in milliseconds):
-
-| Stage | Latency (ms) |
-| --- | --- |
-| Router | 3,777 |
-| Retrieval | 3,934 |
-| Generation | 703 |
-| Faithfulness judge | 2,534 |
-
-- **Query type:** `single` — the router decided one hybrid retrieval round was enough.
-- **Faithfulness score:** `0.994` — the answer is almost entirely grounded in the
-  cited chunks; the local NLI judge found no meaningful contradiction.
-- **Session id:** `test1`.
-
-This single exchange exercises the whole stack described below: adaptive routing,
-hybrid retrieval + cross-encoder reranking, grounded generation with `[Source N]`
-citations, the faithfulness judge, and structured latency logging.
-
----
-
-## Key features
-
-| Area | Capability |
-| --- | --- |
-| **Adaptive routing** | Four routing strategies (`direct`, `single`, `multi_hop`, `graph`) classified by an LLM before any retrieval. |
-| **Hybrid retrieval** | BM25 (lexical) + dense vectors, merged with Reciprocal Rank Fusion, then re-ranked with a cross-encoder. |
-| **HyDE rewriting** | Embeds a hypothetical answer instead of the raw question to close the vocabulary gap. |
-| **Contextual retrieval** | Anthropic-style context prepended to each chunk before embedding for better recall. |
-| **Knowledge graph** | Entity/relation triples extracted into Neo4j; read-only Cypher generation for graph questions. |
-| **Faithfulness judge** | Local NLI (DeBERTa-v3-small) scores every answer sentence; retry loop on low scores. |
-| **Long-term memory** | Mem0 personalizes answers from past conversations (self-hosted or hosted). |
-| **Async ingestion** | Heavy PDF ingestion runs in a Celery worker; the API returns a task id immediately. |
-| **Streaming** | WebSocket endpoint streams one event per LangGraph node in real time. |
-| **Observability** | LangSmith tracing, PostgreSQL access/pipeline/conversation logs, and a built-in HTML analytics dashboard. |
-| **Evaluation** | RAGAS metrics (faithfulness, answer relevancy, context precision/recall) persisted to PostgreSQL. |
-| **Provider-agnostic LLM** | Point `LLM_BASE_URL` at OpenAI, Groq, or Ollama — no code changes. |
 
 ---
 
@@ -270,6 +205,71 @@ HTML `/analytics` dashboard, and RAGAS evaluation persisted to PostgreSQL.
 | **API / Worker** | built from `Dockerfile` | FastAPI+Uvicorn, and the Celery ingest worker. |
 
 ---
+## Example: a real end-to-end query
+
+To show what ARAP actually produces (not a hand-written sample), here is a **real**
+response from the pipeline. A research PDF — *"The LLM Fallacy: Misattribution in
+AI-Assisted Cognitive Workflows"* by Hyunwoo Kim — was ingested, then asked a single
+question. Everything below is the platform's own output, lightly formatted.
+
+> **Question:** "What is the topic of this article?"
+
+**Answer**
+
+> The topic of this article is the **LLM Fallacy**, which refers to a cognitive
+> attribution error where individuals misinterpret outputs generated with the assistance
+> of Large Language Models (LLMs) as evidence of their own independent competence,
+> leading to a systematic divergence between perceived and actual capability.
+
+**Sources** — retrieved, reranked, and cited by the generator:
+
+| # | Page | Chunk | Rerank score | Snippet |
+| --- | --- | --- | --- | --- |
+| 1 | 5 | 5 | −7.0052 | "…cognitive attribution errors in AI-assisted workflows…" |
+| 2 | 6 | 6 | −7.4964 | "…manifestations across cognitive tasks…" |
+| 3 | 10 | 12 | −7.6813 | "…misattribution of LLM-assisted outputs as evidence of human competence…" |
+| 4 | 11 | 13 | −7.9684 | "…Guidelines…" |
+| 5 | 1 | 0 | −8.0122 | "The LLM Fallacy:…" |
+
+**Pipeline metrics** (per stage, in milliseconds):
+
+| Stage | Latency (ms) |
+| --- | --- |
+| Router | 3,777 |
+| Retrieval | 3,934 |
+| Generation | 703 |
+| Faithfulness judge | 2,534 |
+
+- **Query type:** `single` — the router decided one hybrid retrieval round was enough.
+- **Faithfulness score:** `0.994` — the answer is almost entirely grounded in the
+  cited chunks; the local NLI judge found no meaningful contradiction.
+- **Session id:** `test1`.
+
+This single exchange exercises the whole stack described below: adaptive routing,
+hybrid retrieval + cross-encoder reranking, grounded generation with `[Source N]`
+citations, the faithfulness judge, and structured latency logging.
+
+---
+
+## Key features
+
+| Area | Capability |
+| --- | --- |
+| **Adaptive routing** | Four routing strategies (`direct`, `single`, `multi_hop`, `graph`) classified by an LLM before any retrieval. |
+| **Hybrid retrieval** | BM25 (lexical) + dense vectors, merged with Reciprocal Rank Fusion, then re-ranked with a cross-encoder. |
+| **HyDE rewriting** | Embeds a hypothetical answer instead of the raw question to close the vocabulary gap. |
+| **Contextual retrieval** | Anthropic-style context prepended to each chunk before embedding for better recall. |
+| **Knowledge graph** | Entity/relation triples extracted into Neo4j; read-only Cypher generation for graph questions. |
+| **Faithfulness judge** | Local NLI (DeBERTa-v3-small) scores every answer sentence; retry loop on low scores. |
+| **Long-term memory** | Mem0 personalizes answers from past conversations (self-hosted or hosted). |
+| **Async ingestion** | Heavy PDF ingestion runs in a Celery worker; the API returns a task id immediately. |
+| **Streaming** | WebSocket endpoint streams one event per LangGraph node in real time. |
+| **Observability** | LangSmith tracing, PostgreSQL access/pipeline/conversation logs, and a built-in HTML analytics dashboard. |
+| **Evaluation** | RAGAS metrics (faithfulness, answer relevancy, context precision/recall) persisted to PostgreSQL. |
+| **Provider-agnostic LLM** | Point `LLM_BASE_URL` at OpenAI, Groq, or Ollama — no code changes. |
+
+---
+
 
 ## Project structure
 
