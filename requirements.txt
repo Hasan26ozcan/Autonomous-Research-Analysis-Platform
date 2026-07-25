@@ -183,7 +183,7 @@ langgraph-sdk==0.4.2
     # via
     #   -r requirements.in
     #   langgraph
-langsmith==0.10.6
+langsmith==0.10.10
     # via
     #   -r requirements.in
     #   langchain-core
