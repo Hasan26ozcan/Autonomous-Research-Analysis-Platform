@@ -161,7 +161,7 @@ langchain-core==1.4.9
     #   langgraph-checkpoint
     #   langgraph-prebuilt
     #   langgraph-sdk
-langchain-openai==1.3.5
+langchain-openai==1.4.1
     # via -r requirements.in
 langchain-protocol==0.0.18
     # via
