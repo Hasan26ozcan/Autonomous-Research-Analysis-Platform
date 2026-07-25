@@ -450,7 +450,7 @@ uuid-utils==0.17.0
     # via
     #   langchain-core
     #   langsmith
-uvicorn[standard]==0.30.6
+uvicorn[standard]==0.51.0
     # via -r requirements.in
 vine==5.1.0
     # via
