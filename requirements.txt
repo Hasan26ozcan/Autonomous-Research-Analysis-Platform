@@ -223,7 +223,7 @@ numpy==1.26.4
     #   scipy
     #   sentence-transformers
     #   transformers
-openai==2.46.0
+openai==2.48.0
     # via
     #   -r requirements.in
     #   langchain-openai
