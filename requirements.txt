@@ -286,7 +286,7 @@ pygments==2.20.0
     # via
     #   pytest
     #   rich
-pymupdf==1.24.10
+pymupdf==1.28.0
     # via -r requirements.in
 pymupdfb==1.24.10
     # via pymupdf
