@@ -98,7 +98,7 @@ h11==0.16.0
     #   httpcore
     #   uvicorn
     #   wsproto
-h2==4.3.0
+h2==4.4.0
     # via httpx
 hf-xet==1.5.2
     # via huggingface-hub
